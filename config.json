@@ -1,0 +1,82 @@
+{
+  "interval_seconds": 30,
+  "retention_days": 30,
+  "gateway": {
+    "enabled": true,
+    "method": "arp_primary"
+  },
+  "icmp_targets": [
+    {
+      "name": "阿里DNS",
+      "host": "223.5.5.5",
+      "weight": 1.0,
+      "actor": true,
+      "tcp_port": 443
+    },
+    {
+      "name": "百度DNS",
+      "host": "180.76.76.76",
+      "weight": 1.0,
+      "actor": true,
+      "tcp_port": null
+    },
+    {
+      "name": "腾讯DNS",
+      "host": "119.29.29.29",
+      "weight": 0.6,
+      "actor": true,
+      "tcp_port": null
+    },
+    {
+      "name": "GoogleDNS",
+      "host": "8.8.8.8",
+      "weight": 0.4,
+      "actor": false,
+      "tcp_port": null
+    }
+  ],
+  "dns": {
+    "names": [
+      "www.baidu.com",
+      "www.aliyun.com"
+    ],
+    "external_servers": [
+      "223.5.5.5"
+    ],
+    "timeout_seconds": 3
+  },
+  "http": {
+    "urls": [
+      "http://connect.rom.miui.com/generate_204",
+      "http://wifi.vivo.com.cn/generate_204"
+    ],
+    "timeout_seconds": 4
+  },
+  "thresholds": {
+    "rtt_warn_ms": 150,
+    "rtt_bad_ms": 400,
+    "loss_warn_pct": 20.0,
+    "jitter_warn_ms": 60.0,
+    "rssi_warn_dbm": -70,
+    "rssi_bad_dbm": -80,
+    "noise_bad_dbm": -85,
+    "quorum_ratio": 0.5,
+    "degraded_streak": 2,
+    "bleep_ticks": 1
+  },
+  "wifi": {
+    "enabled": true,
+    "sample_every_ticks": 2,
+    "scan_neighbors": false
+  },
+  "forensics": {
+    "traceroute_on_incident": true,
+    "traceroute_target": "223.5.5.5",
+    "traceroute_max_hops": 12,
+    "traceroute_timeout_seconds": 25,
+    "cooldown_seconds": 600,
+    "capture_snapshot": true
+  },
+  "interface": "auto",
+  "timezone_note": ""
+}

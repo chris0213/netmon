@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+env/
+
+# netmon 运行数据 —— 含本机 IP / MAC / 无线信息，绝不入库
+data/
+data-*/
+*.log
+
+# 报告是生成物，只保留合成样例用于展示
+reports/*
+!reports/demo-report.html
+
+# 本地配置覆盖（config.json 本身是模板，需要入库）
+config.local.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
