@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
+import struct
 import time
 import urllib.error
 import urllib.request
@@ -98,6 +100,58 @@ def parse_arp(text: str, host: str) -> dict:
                 return {"resolved": False, "mac": None, "raw": line.strip()}
             return {"resolved": True, "mac": mac, "raw": line.strip()}
     return {"resolved": False, "mac": None, "raw": ""}
+
+
+def arp_via_rtm(ip: str) -> dict:
+    """原生 PF_ROUTE RTM_GET 查询 L2 MAC，不依赖 arp 二进制。
+
+    背景：受限环境（如 WorkBuddy 托管 Python 的沙箱）下，`arp` 二进制的查询会被
+    静默吞掉——退出码 0、输出为空，但 PF_ROUTE 原生 socket 不受影响（实测验证）。
+    消息布局为 64 位 macOS 实测值：rt_msghdr 头 92 字节（rt_metrics 用 8 字节
+    u_long），sockaddr 从偏移 92 开始，与 `sizeof(struct rt_msghdr)` C 编译值一致。
+
+    返回结构与 parse_arp 对齐：{"resolved", "mac", "raw"}。
+    """
+    RTM_GET, RTA_DST = 4, 0x1
+    AF_INET, AF_LINK = 2, 18
+    HDR_LEN = 92
+    fail = {"resolved": False, "mac": None, "raw": ""}
+    try:
+        sa = struct.pack("=BBH4s8x", 16, AF_INET, 0, socket.inet_aton(ip))  # 16B
+        hdr = struct.pack("=HBBHHiiiiiiI",  # msglen ver type idx pad flags addrs pid seq errno fmask inits
+                          HDR_LEN + len(sa), 5, RTM_GET, 0, 0, 0, RTA_DST,
+                          os.getpid(), 0, 0, 0, 0)
+        msg = hdr + b"\x00" * (HDR_LEN - len(hdr)) + sa
+        s = socket.socket(17, socket.SOCK_RAW, 0)  # AF_ROUTE
+        try:
+            s.send(msg)
+            s.settimeout(2)
+            data = s.recv(2048)
+        finally:
+            s.close()
+        rlen, _v, rtype, _i, _p, _f, _a, _pid, _sq, errno, _m, _n = \
+            struct.unpack_from("=HBBHHiiiiiiI", data, 0)
+        if rtype != RTM_GET or errno != 0:
+            fail["raw"] = f"rtm_type={rtype} errno={errno}"
+            return fail
+        off = HDR_LEN
+        while off + 8 <= min(rlen, len(data)):
+            sa_len = data[off]
+            if sa_len == 0:
+                break
+            fam = data[off + 1]
+            if fam == AF_LINK:
+                _idx, _typ, nlen, alen, _sl = struct.unpack_from("=HBBBB", data, off + 2)
+                if alen == 6:
+                    raw = data[off + 8 + nlen: off + 8 + nlen + alen]
+                    return {"resolved": True, "mac": ":".join(f"{b:02x}" for b in raw),
+                            "raw": f"rtm ifindex={_idx}"}
+            off += (sa_len + 3) & ~3
+        fail["raw"] = "no_af_link_in_reply"
+        return fail
+    except OSError as exc:
+        fail["raw"] = type(exc).__name__
+        return fail
 
 
 def parse_ifconfig(text: str) -> dict:
@@ -290,10 +344,19 @@ def probe_gateway(cfg: dict, gw: str | None) -> dict:
     util.run_cmd(["ping", "-n", "-c", "1", "-W", "300", "-t", "1", gw], timeout=2.5)
 
     with ThreadPoolExecutor(max_workers=3) as ex:
-        f_arp = ex.submit(lambda: parse_arp(util.run_cmd(["arp", "-an"], timeout=3)["stdout"], gw))
+        f_arp = ex.submit(arp_via_rtm, gw)
         f_icmp = ex.submit(do_ping, gw, 2, 600, 2)
         f_tcp = ex.submit(probe_tcp_liveness, gw, [80, 443, 22, 53], 1.0)
         arp_entry = f_arp.result()
+        if not arp_entry["resolved"]:
+            # 原生查询失败（如目标不在 ARP 表）→ 退回 arp 二进制：单条查询，再全表 dump
+            single = parse_arp(util.run_cmd(["arp", "-n", gw], timeout=3)["stdout"], gw)
+            if not single["resolved"]:
+                full = parse_arp(util.run_cmd(["arp", "-an"], timeout=3)["stdout"], gw)
+                if full["resolved"]:
+                    single = full
+            if single["resolved"]:
+                arp_entry = single
         icmp = f_icmp.result()
         tcp = f_tcp.result()
 
@@ -428,14 +491,16 @@ def env_snapshot(cfg: dict) -> dict:
             nameservers.append(m.group(1))
     dev = wifi_device()
     ports = _CACHE.get("hardware_ports") or []
-    wifi_card = None
+    wifi_card = wifi_fw = None
     r = util.run_cmd(["system_profiler", "SPAirPortDataType", "-json"], timeout=20)
     try:
         d = json.loads(r["stdout"])["SPAirPortDataType"][0]["spairport_airport_interfaces"][0]
-        wifi_card = d.get("spairport_wireless_card_type")
+        # 值形如 "spairport_wireless_card_type_wifi (0x14E4, 0x4378)"，剥掉前缀再入库
+        wifi_card = (d.get("spairport_wireless_card_type") or "").replace(
+            "spairport_wireless_card_type_", "") or None
         wifi_fw = d.get("spairport_wireless_firmware_version")
-    except Exception:  # noqa: BLE001
-        wifi_fw = None
+    except Exception:  # noqa: BLE001 - 解析失败时两项都保持 None，绝不带出未定义变量
+        pass
     snap = {
         "route": route,
         "interface": route.get("interface"),
@@ -455,7 +520,8 @@ def env_snapshot(cfg: dict) -> dict:
 # ------------------------------------------------------------------ 单轮采集
 
 def collect(cfg: dict, tick_index: int = 0) -> dict:
-    """采集一轮完整快照。所有探针并行，耗时 ≈ 最慢的那个（约 2-4 秒）。"""
+    """采集一轮完整快照。全部探针（含链路/无线块）并行，耗时 ≈ 最慢任务（约 1-2 秒，
+    无线采样冷启动时最多再加 1.5 秒）。"""
     t_start = util.now_ts()
 
     route = parse_route(util.run_cmd(["route", "-n", "get", "default"], timeout=4)["stdout"])
@@ -482,28 +548,48 @@ def collect(cfg: dict, tick_index: int = 0) -> dict:
     for url in http_cfg.get("urls", []):
         tasks.append(("http", probe_http, (url, float(http_cfg.get("timeout_seconds", 4)))))
 
+    # 链路块：接口状态 → 物理网卡判定 → 计数器 → 无线采样。
+    # 旧版串行执行，system_profiler 冷启动独占 1.5-3s，是单轮耗时的最大头；
+    # 现在与探针并入同一线程池并行执行，单轮耗时 ≈ 最慢任务（网关 ICMP 或无线冷采样）。
+    def _link_block() -> tuple:
+        info = probe_route_interface(iface)
+        phys = iface
+        if iface and re.match(r"^(utun|ppp|ipsec|tun)", iface):
+            for cand in ("en0", "en1", "en2", "en3", "en4", "en5"):
+                cand_info = probe_route_interface(cand)
+                if cand_info.get("ipv4"):
+                    phys = cand
+                    info = cand_info
+                    break
+        cnt = probe_counters(phys) if phys else {}
+        wf = collect_wifi(cfg, tick_index) if re.match(r"^en\d", phys or "") else {}
+        return info, phys, cnt, wf
+
     results: dict[str, list] = {"gateway": [], "icmp": [], "tcp": [], "dns": [], "dns_ext": [], "http": []}
-    with ThreadPoolExecutor(max_workers=min(16, len(tasks) + 2)) as ex:
+    timings: dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=min(16, len(tasks) + 4)) as ex:
         futures = [(kind, ex.submit(fn, *args)) for kind, fn, args in tasks]
+        f_link = ex.submit(_link_block)
+        f_nwi = ex.submit(probe_reachability_flags)
         for kind, fut in futures:
+            t0 = util.now_ts()
             try:
                 results[kind].append(fut.result(timeout=30))
             except Exception as exc:  # noqa: BLE001
                 results[kind].append({"ok": False, "error": type(exc).__name__})
-
-    # 串行部分：接口状态 / 计数器 / 无线
-    iface_info = probe_route_interface(iface)
-    physical = iface
-    if iface and re.match(r"^(utun|ppp|ipsec|tun)", iface):
-        for cand in ("en0", "en1", "en2", "en3", "en4", "en5"):
-            info = probe_route_interface(cand)
-            if info.get("ipv4"):
-                physical = cand
-                iface_info = info
-                break
-    counters = probe_counters(physical) if physical else {}
-    wifi = collect_wifi(cfg, tick_index) if re.match(r"^en\d", physical or "") else {}
-    nwi = probe_reachability_flags()
+            timings[kind] = max(timings.get(kind, 0.0), round((util.now_ts() - t0) * 1000, 1))
+        t0 = util.now_ts()
+        try:
+            iface_info, physical, counters, wifi = f_link.result(timeout=30)
+        except Exception:  # noqa: BLE001 - 链路块失败不能拖垮整轮，退回最小信息
+            iface_info, physical, counters, wifi = probe_route_interface(iface), iface, {}, {}
+        timings["link_block"] = round((util.now_ts() - t0) * 1000, 1)
+        t0 = util.now_ts()
+        try:
+            nwi = f_nwi.result(timeout=10)
+        except Exception:  # noqa: BLE001
+            nwi = {}
+        timings["reachability"] = round((util.now_ts() - t0) * 1000, 1)
 
     return {
         "ts": t_start,
@@ -522,5 +608,6 @@ def collect(cfg: dict, tick_index: int = 0) -> dict:
         "counters": counters,
         "wifi": wifi,
         "nwi": nwi,
+        "timings": timings,
         "elapsed_ms": round((util.now_ts() - t_start) * 1000, 1),
     }

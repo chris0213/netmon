@@ -74,6 +74,7 @@ DEFAULTS: dict = {
         "traceroute_timeout_seconds": 25,
         "cooldown_seconds": 600,
         "capture_snapshot": True,
+        "wifi_log_on_incident": True,   # 断网时抓取无线子系统日志摘要（判 AP 踢线的最硬证据）
     },
 
     "interface": "auto",               # auto = 跟随默认路由接口

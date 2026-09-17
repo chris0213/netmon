@@ -24,3 +24,6 @@ config.local.json
 .vscode/
 .idea/
 *.swp
+
+# AI 助手工作目录（会话记忆，非项目代码）
+.workbuddy/

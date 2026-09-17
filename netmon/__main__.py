@@ -14,12 +14,11 @@
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import argparse
 import csv
 import io
 import json
+import os
 import signal
 import sys
 import threading
@@ -58,7 +57,8 @@ def fmt_line(tick: dict, status: str, reasons: list[str], metrics: dict) -> str:
 def print_once(tick: dict, status: str, reasons: list[str], metrics: dict) -> None:
     print(fmt_line(tick, status, reasons, metrics))
     print()
-    print("  接口      ", tick.get("iface"), tick.get("iface_info", {}).get("ipv4"))
+    ips = "、".join(tick.get("iface_info", {}).get("ipv4") or []) or "-"
+    print("  接口      ", tick.get("iface"), ips)
     gw = tick.get("gateway") or {}
     print("  网关      ", gw.get("host"),
           "| 存活信号", "+".join(gw.get("signals") or []) or "无（判定为不可达）",
@@ -85,6 +85,10 @@ def print_once(tick: dict, status: str, reasons: list[str], metrics: dict) -> No
     if c:
         print(f"  接口计数  in {c.get('ipkts')} pkt / err {c.get('ierrs')} | out {c.get('opkts')} pkt / err {c.get('oerrs')}")
     print(f"  本轮耗时  {tick.get('elapsed_ms')} ms")
+    if os.environ.get("NETMON_DEBUG") and tick.get("timings"):
+        tms = tick["timings"]
+        detail = "  ".join(f"{k}={v}ms" for k, v in sorted(tms.items(), key=lambda x: -x[1]))
+        print(f"  耗时分解  {detail}（并行取最慢者，非累加）")
 
 
 # ------------------------------------------------------------------ 常驻采集
@@ -130,18 +134,21 @@ class Watcher:
 
     def _maybe_traceroute(self, tick: dict) -> None:
         fz = self.cfg.get("forensics", {})
-        if not fz.get("traceroute_on_incident"):
+        if not (fz.get("traceroute_on_incident") or fz.get("wifi_log_on_incident", True)):
             return
         now = now_ts()
         if now - self.last_forensic_ts < float(fz.get("cooldown_seconds", 600)):
             return
         self.last_forensic_ts = now
-        self._spawn(
-            self._do_traceroute, tick,
-            str(fz.get("traceroute_target", "223.5.5.5")),
-            int(fz.get("traceroute_max_hops", 12)),
-            float(fz.get("traceroute_timeout_seconds", 25)),
-        )
+        if fz.get("traceroute_on_incident"):
+            self._spawn(
+                self._do_traceroute, tick,
+                str(fz.get("traceroute_target", "223.5.5.5")),
+                int(fz.get("traceroute_max_hops", 12)),
+                float(fz.get("traceroute_timeout_seconds", 25)),
+            )
+        if fz.get("wifi_log_on_incident", True):
+            self._spawn(self._do_wifi_log, tick)
 
     def _do_snapshot(self, tick: dict) -> None:
         try:
@@ -159,6 +166,16 @@ class Watcher:
             store.log(f"已保存断点追踪（{target}）")
         except Exception as exc:  # noqa: BLE001
             store.log(f"断点追踪失败：{type(exc).__name__}", level="ERROR")
+
+    def _do_wifi_log(self, tick: dict) -> None:
+        """断网瞬间抓取无线子系统日志摘要 —— 判断"是不是 AP 把你踢了"最硬的证据。"""
+        try:
+            rec = forensics.wifi_log_excerpt()
+            rec["incident_start"] = tick["ts"]
+            store.append_evidence(rec)
+            store.log("已保存无线子系统日志摘要")
+        except Exception as exc:  # noqa: BLE001
+            store.log(f"无线日志取证失败：{type(exc).__name__}", level="ERROR")
 
     def maybe_prune(self, tick: dict) -> None:
         if now_ts() - self.last_prune_ts < 3600:
@@ -294,7 +311,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import socketserver
 
     cfg = load_config(args.config)
-    cache: dict = {"body": None, "key": None}
+    cache: dict = {"body": None, "ticks": None, "html_key": None, "ticks_key": None}
+
+    def _fingerprint() -> tuple:
+        """数据文件 mtime 指纹：数据没变化时直接复用缓存，避免每个请求全量读盘+重渲染。"""
+        parts = []
+        for p in sorted(DATA_DIR.glob("*.jsonl")):
+            try:
+                parts.append((p.name, p.stat().st_mtime_ns))
+            except OSError:
+                continue
+        return tuple(parts)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -303,22 +330,26 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 self.end_headers()
                 return
             if self.path.startswith("/api/ticks"):
-                _, ticks, _ = _load(1)
-                body = json.dumps(ticks[-args.tail:], ensure_ascii=False).encode()
+                key = _fingerprint()
+                if cache["ticks_key"] != key:
+                    _, ticks, _ = _load(1)
+                    cache["ticks"] = json.dumps(ticks[-args.tail:], ensure_ascii=False).encode()
+                    cache["ticks_key"] = key
+                body = cache["ticks"]
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            _, ticks, evidence = _load(args.days)
-            key = (len(ticks), ticks[-1]["ts"] if ticks else 0)
-            if cache["key"] != key:
+            key = _fingerprint()
+            if cache["html_key"] != key:
+                _, ticks, evidence = _load(args.days)
                 incidents = analyze.build_incidents(ticks, cfg)
                 store.attach_evidence(incidents, evidence)
                 cache["body"] = report.render(cfg, ticks, incidents, evidence,
                                               probe.env_snapshot(cfg)).encode("utf-8")
-                cache["key"] = key
+                cache["html_key"] = key
             body = cache["body"]
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -475,7 +506,12 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "cmd", None):
         parser.print_help()
         return 0
-    return int(args.func(args) or 0)
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        # serve/run 等 Ctrl+C 退出是正常操作，不该甩 traceback
+        print("\n已停止。")
+        return 130
 
 
 if __name__ == "__main__":

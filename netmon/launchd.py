@@ -30,7 +30,8 @@ def build_plist(interval: int, log_dir: Path) -> dict:
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin",
         },
         "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        # 监控服务必须常在：无论退出码如何都拉起（ SIGTERM 干净退出后也要自愈）
+        "KeepAlive": True,
         "ThrottleInterval": 20,
         "StandardOutPath": str(log_dir / "launchd.out.log"),
         "StandardErrorPath": str(log_dir / "launchd.err.log"),

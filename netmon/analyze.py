@@ -170,16 +170,21 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     wifi_known = wifi.get("connected") is not None
     wifi_connected = wifi.get("connected")
 
+    # 一次性求出"最差路径"，metrics 构造与下面的判定共用，避免重复计算
+    rtt_max, rtt_max_host = _worst_rtt(tick)
+    loss_max, loss_max_host = _worst_loss(tick)
+
     metrics = {
         "wan_ratio": _wan_ratio(tick),
         "rtt_avg": _avg_rtt(tick),
-        "rtt_max": _worst_rtt(tick)[0],
-        "rtt_max_host": _worst_rtt(tick)[1],
+        "rtt_max": rtt_max,
+        "rtt_max_host": rtt_max_host,
         "loss_pct": _loss(tick),
-        "loss_max": _worst_loss(tick)[0],
-        "loss_max_host": _worst_loss(tick)[1],
+        "loss_max": loss_max,
+        "loss_max_host": loss_max_host,
         "jitter_ms": _jitter(tick),
         "rssi_dbm": wifi.get("rssi_dbm"),
+        "noise_dbm": wifi.get("noise_dbm"),
         "snr_db": wifi.get("snr_db"),
         "http_ok": any(h.get("ok") for h in tick.get("http", [])),
         "dns_sys_ok": any(d.get("ok") for d in tick.get("dns", [])),
@@ -228,6 +233,7 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     loss_host = metrics["loss_max_host"]
     jitter = metrics["jitter_ms"]
     rssi = metrics["rssi_dbm"]
+    noise = metrics["noise_dbm"]
     rtt_tag = f"{rtt_host} " if rtt_host else ""
 
     bad_rtt = rtt is not None and rtt >= float(th.get("rtt_bad_ms", 400))
@@ -236,6 +242,8 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     bad_jitter = jitter is not None and jitter >= float(th.get("jitter_warn_ms", 60))
     bad_rssi = rssi is not None and rssi <= int(th.get("rssi_bad_dbm", -80))
     warn_rssi = rssi is not None and rssi <= int(th.get("rssi_warn_dbm", -70))
+    # 噪底抬升（越接近 0 越糟）→ 同频段干扰/信道拥挤
+    bad_noise = noise is not None and noise >= int(th.get("noise_bad_dbm", -85))
 
     if bad_rtt:
         reasons.append(f"{rtt_tag}平均延迟 {rtt:.0f} ms 超过严重阈值")
@@ -245,8 +253,10 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
         reasons.append(f"抖动 {jitter:.0f} ms 偏大")
     if bad_rssi:
         reasons.append(f"信号 {rssi} dBm 已低于可用门限")
+    if bad_noise:
+        reasons.append(f"噪底 {noise} dBm 偏高（同频段干扰）")
 
-    if bad_rtt or bad_loss or bad_jitter or bad_rssi:
+    if bad_rtt or bad_loss or bad_jitter or bad_rssi or bad_noise:
         return "degraded", reasons, metrics
 
     if warn_rtt:
@@ -300,6 +310,14 @@ def build_incidents(ticks: list[dict], cfg: dict) -> list[dict]:
     if cur is not None:
         runs.append(cur)
 
+    # 质量类异常（degraded/weak_signal）只有连续 degraded_streak 次才登记为事件，
+    # 单点抖动直接忽略；硬故障（断链/断网关/断外网/DNS）不受此门槛影响。
+    streak = max(1, int(cfg.get("thresholds", {}).get("degraded_streak", 2)))
+    quality_classes = {"degraded", "weak_signal"}
+    runs = [r for r in runs
+            if r["statuses"].most_common(1)[0][0] not in quality_classes
+            or len(r["ticks"]) >= streak]
+
     # 合并相邻的同类事件（间隔小于 merge_gap）
     merged: list[dict] = []
     for r in runs:
@@ -324,6 +342,7 @@ def build_incidents(ticks: list[dict], cfg: dict) -> list[dict]:
 
     out: list[dict] = []
     span_end = max(t["ts"] for t in ticks) + interval
+    bleep = max(1, int(cfg.get("thresholds", {}).get("bleep_ticks", 1)))
     for idx, r in enumerate(merged):
         start = r["start_ts"]
         end = min(r["last_bad_ts"] + interval, span_end)
@@ -351,7 +370,8 @@ def build_incidents(ticks: list[dict], cfg: dict) -> list[dict]:
             "reasons": r["reasons"],
             "tick_count": len(r["ticks"]),
             # 单一采样点异常 → 单点瞬断。两次以上就该当作持续性故障看待，不要归为抖动。
-            "is_bleep": len(r["ticks"]) <= 1 or duration <= interval * 1.6,
+            # 采样点数 <= bleep_ticks（或时长 <= 1.6 个间隔）→ 单点瞬断，归为抖动而非持续故障
+            "is_bleep": len(r["ticks"]) <= bleep or duration <= interval * 1.6,
             "rssi_min": min(rssis) if rssis else None,
             "rssi_avg": util.safe_avg(rssis),
             "rtt_avg": util.safe_avg(rtts),

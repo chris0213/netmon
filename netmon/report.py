@@ -314,16 +314,15 @@ def _status_tag(status: str) -> str:
 
 
 def _evidence_block(ev: dict) -> str:
-    if ev.get("kind") == "traceroute":
-        body = ev.get("output", "")
-    elif ev.get("kind") == "snapshot":
+    if ev.get("kind") == "snapshot":
         parts = []
         for key in ("ifconfig", "route_get", "scutil_nwi", "wifi", "arp"):
             if ev.get(key):
                 parts.append(f"$ {key}\n{ev[key]}")
         body = "\n\n".join(parts)
     else:
-        body = json.dumps(ev, ensure_ascii=False, indent=2)
+        # traceroute / wifilog 等均带 output 字段；未知类型兜底为 JSON
+        body = ev.get("output") or json.dumps(ev, ensure_ascii=False, indent=2)
     return f'<pre>{_esc(body)}</pre>'
 
 
@@ -526,13 +525,39 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             + _kpi("观测时长", summary["span_human"], f"{summary['tick_count']} 个采样点")
         )
 
+    # ---------------- 网关存活信号统计（观测期内所有含网关的采样点）
+    gw_total = 0
+    gw_sig_count: dict[str, int] = {}
+    gw_mac_last = None
+    for t in ticks:
+        gw = t.get("gateway") or {}
+        if not gw.get("host"):
+            continue
+        gw_total += 1
+        for s in gw.get("signals") or []:
+            gw_sig_count[s] = gw_sig_count.get(s, 0) + 1
+        mac = (gw.get("arp") or {}).get("mac")
+        if mac:
+            gw_mac_last = mac
+    if gw_total:
+        sig_pct = " · ".join(
+            f"{s} {round(gw_sig_count.get(s, 0) / gw_total * 100)}%"
+            for s in ("arp", "icmp", "tcp_rst")
+        )
+        gw_row = (
+            f"{env.get('gateway') or '-'}（观测期存活信号：{sig_pct}"
+            f" · 最近 ARP MAC {gw_mac_last or '未解析到'}，共 {gw_total} 个采样点）"
+        )
+    else:
+        gw_row = env.get("gateway") or "-"
+
     # ---------------- 环境
     env_rows = [
         ("主机", env.get("host") or f"{platform.node()} · macOS {platform.mac_ver()[0]}"),
         ("采集区间", f"{util.iso(span_start)} → {util.iso(span_end)}"),
         ("采样间隔", f"{cfg.get('interval_seconds')} 秒"),
         ("默认路由接口", _esc(env.get("interface") or (ticks[0].get("iface") if ticks else "-") or "-")),
-        ("网关", _esc(env.get("gateway") or "-")),
+        ("网关", gw_row),
         ("DNS 服务器", "、".join(env.get("nameservers") or []) or "-"),
         ("无线网卡", _esc(env.get("wifi_card") or "-")),
         ("ICMP 判定目标", "、".join(
@@ -542,7 +567,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
         ("报告目录", _rel(REPORT_DIR)),
     ]
     env_html = "".join(
-        f'<dt>{_esc(k)}</dt><dd>{v if k == "主机" else _esc(v)}</dd>' for k, v in env_rows
+        f'<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>' for k, v in env_rows
     )
 
     legend = "".join(

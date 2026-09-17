@@ -50,9 +50,9 @@ def traceroute(incident_start_ts: float, target: str, max_hops: int = 12,
 def wifi_log_excerpt(minutes: int = 5) -> dict:
     """抓取最近的无线子系统日志摘要（只取计数与最后若干行，避免体量失控）。"""
     r = util.run_cmd(
-        ["log", "show", "--last", f"{minutes}m", "--style", "compact",
+        ["log", "show", "--last", f"{minutes}m", "--style", "compact", "--info",
          "--predicate", 'subsystem == "com.apple.wifi"'],
-        timeout=30,
+        timeout=90,
     )
     lines = [ln for ln in r["stdout"].splitlines() if ln.strip()]
     keywords = ("disassoc", "deauth", "roam", "Assoc", "scan", "reason", "link down", "BSSID")
