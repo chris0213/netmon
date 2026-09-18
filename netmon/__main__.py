@@ -77,6 +77,8 @@ def print_once(tick: dict, status: str, reasons: list[str], metrics: dict) -> No
     for d in tick.get("dns_auto", []):
         print(f"  DNS  网卡自动@{d['server']} -> {d['name']}",
               f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
+    if (metrics or {}).get("dns_note"):
+        print("  DNS  提示    ", metrics["dns_note"])
     for h in tick.get("http", []):
         print(f"  HTTP {h['url'][:52]}", f"{h['status']} {h['ms']}ms" if h.get("ok") else f"失败 {h.get('error')}")
     w = tick.get("wifi") or {}

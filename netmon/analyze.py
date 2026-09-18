@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 
 from . import util
@@ -159,6 +160,41 @@ def _jitter(tick: dict) -> float | None:
     return util.safe_avg(vals)
 
 
+_PRIVATE_IP_RE = re.compile(r"^(10\.|127\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)")
+
+
+def _dns_diverge(tick: dict) -> str | None:
+    """对比系统解析器与直连 DNS（外部配置 + 网卡下发）的解析结果，返回观测结论。
+
+    刻意只观测、不参与状态判定：
+    - 系统解析出私网/保留地址而直连全为公网 → 疑似 DNS 劫持/强制门户（硬信号）
+    - 系统结果与所有直连结果完全不相交 → 分歧提示（常见于 CDN 就近解析，软信号）
+    """
+    sys_by_name: dict[str, set] = {}
+    for d in tick.get("dns", []):
+        if d.get("ok") and d.get("answers"):
+            sys_by_name.setdefault(d["name"], set(d["answers"]))
+    direct_by_name: dict[str, list[set]] = {}
+    for d in list(tick.get("dns_ext", [])) + list(tick.get("dns_auto", [])):
+        if d.get("ok") and d.get("answers"):
+            direct_by_name.setdefault(d["name"], []).append(set(d["answers"]))
+    for name, sys_set in sys_by_name.items():
+        directs = direct_by_name.get(name) or []
+        if not directs:
+            continue
+        direct_union = set().union(*directs)
+        if not direct_union:
+            continue
+        sys_private = any(_PRIVATE_IP_RE.match(a) for a in sys_set)
+        direct_private = any(_PRIVATE_IP_RE.match(a) for a in direct_union)
+        if sys_private and not direct_private:
+            return (f"系统解析器把 {name} 解析到私网/保留地址，而直连 DNS 全为公网地址"
+                    "→ 疑似 DNS 劫持或强制门户")
+        if sys_set.isdisjoint(direct_union):
+            return f"系统解析器对 {name} 的解析结果与所有直连 DNS 完全不同（常见于 CDN 就近解析，仅提示）"
+    return None
+
+
 def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     """返回 (状态, 原因列表, 关键指标)。"""
     th = cfg["thresholds"]
@@ -189,6 +225,9 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
         "http_ok": any(h.get("ok") for h in tick.get("http", [])),
         "dns_sys_ok": any(d.get("ok") for d in tick.get("dns", [])),
         "dns_ext_ok": any(d.get("ok") for d in tick.get("dns_ext", [])),
+        "dns_auto_ok": any(d.get("ok") for d in tick.get("dns_auto", [])),
+        "dns_auto_all": tick.get("dns_auto", []),
+        "dns_note": _dns_diverge(tick),
         "gw_alive": (tick.get("gateway") or {}).get("alive"),
         "gw_method": (tick.get("gateway") or {}).get("method"),
     }
@@ -220,10 +259,18 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     # 4. DNS 层
     sys_ok, ext_ok = metrics["dns_sys_ok"], metrics["dns_ext_ok"]
     if not sys_ok:
-        if ext_ok:
+        auto_results = metrics["dns_auto_all"]
+        if ext_ok and auto_results and not metrics["dns_auto_ok"]:
+            bad_auto = "、".join(d["server"] for d in auto_results if not d.get("ok"))
+            reasons.append(f"系统解析器与网卡下发的 DNS（{bad_auto}）同时失败，"
+                           "但直连公共 DNS 成功 → 路由器/DHCP 下发的 DNS 配置问题，"
+                           "可临时改用公共 DNS 验证")
+        elif ext_ok:
             reasons.append("系统解析器失败，但直连 223.5.5.5 成功 → 本机 DNS 配置问题")
         else:
             reasons.append("系统解析器与外部 DNS 同时失败")
+        if metrics["dns_note"] and "劫持" in metrics["dns_note"]:
+            reasons.append(metrics["dns_note"])
         return "dns_fail", reasons, metrics
 
     # 5. 质量层：用"最差路径"判定，避免被其他正常目标的均值稀释
@@ -512,16 +559,28 @@ def verdict(summary: dict, incidents: list[dict], cfg: dict) -> dict:
         bullets.append("事件构成：" + "、".join(parts) + "。")
 
     if summary.get("bleep_count"):
-        bullets.append(
-            f"其中 {summary['bleep_count']} 次为单点采样即恢复的瞬断 —— "
-            "这类最影响体感、也最难抓，说明链路存在亚秒到数十秒级的短暂失联。"
-        )
+        n_ble = summary["bleep_count"]
+        n_inc = summary.get("incident_count", 0)
+        if n_ble == n_inc == 1:
+            bullets.append(
+                "这 1 次异常为单点采样即恢复的瞬断 —— 最影响体感、也最难抓，"
+                "说明链路存在亚秒到数十秒级的短暂失联。"
+            )
+        else:
+            bullets.append(
+                f"其中 {n_ble} 次为单点采样即恢复的瞬断 —— "
+                "这类最影响体感、也最难抓，说明链路存在亚秒到数十秒级的短暂失联。"
+            )
     if summary.get("worst_hour"):
         w = summary["worst_hour"]
-        bullets.append(
-            f"高发时段：{w['hour']:02d}:00-{w['hour'] + 1:02d}:00（异常占比 {w['rate']}%），"
-            "可用于对照单位网络的分时段策略或邻居 AP 的负载规律。"
-        )
+        span = f"{w['hour']:02d}:00-{w['hour'] + 1:02d}:00（异常占比 {w['rate']}%）"
+        if summary.get("incident_count", 0) >= 3:
+            bullets.append(
+                f"高发时段：{span}，可用于对照单位网络的分时段策略或邻居 AP 的负载规律。"
+            )
+        else:
+            # 样本太少时称"高发"是统计话术错误，改用中性表述
+            bullets.append(f"发生时段：{span}，事件样本尚少，暂不足以归纳时段规律。")
     if summary.get("rtt_avg") is not None:
         def _r(v) -> str:
             return f"{v:.1f}" if isinstance(v, (int, float)) else "-"
