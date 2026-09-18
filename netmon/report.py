@@ -423,6 +423,10 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             k = f"DNS 直连 {x['server']}"
             probe_stats[k][1] += 1
             probe_stats[k][0] += 1 if x.get("ok") else 0
+        for x in t.get("dns_auto", []):
+            k = f"DNS 网卡下发 {x['server']}"
+            probe_stats[k][1] += 1
+            probe_stats[k][0] += 1 if x.get("ok") else 0
         for x in t.get("http", []):
             k = f"HTTP {x['url'].split('/')[2]}"
             probe_stats[k][1] += 1
@@ -576,7 +580,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     )
 
     n_days = len({util.day_str(t["ts"]) for t in ticks}) if ticks else 0
-    title = f"网络断连排查报告 {util.day_str(span_start)}" + ("" if n_days <= 1 else f" ~ {util.day_str(span_end)}")
+    title = f"网络健康报告 {util.day_str(span_start)}" + ("" if n_days <= 1 else f" ~ {util.day_str(span_end)}")
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">

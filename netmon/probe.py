@@ -479,6 +479,29 @@ def probe_reachability_flags() -> dict:
 
 # ------------------------------------------------------------------ 环境快照
 
+def system_dns_servers(max_n: int = 3, refresh_s: float = 600.0) -> list[str]:
+    """网卡/配置文件实际下发的 DNS 解析器（scutil --dns），供逐台直测。
+
+    只取 IPv4、去重、排除 0.0.0.0；带 TTL 缓存——DNS 随 DHCP/VPN 变化不频繁，
+    但网络切换后应能感知，故 10 分钟刷新一次。
+    """
+    cached = _CACHE.get("sys_dns")
+    if cached and util.now_ts() - cached["ts"] < refresh_s:
+        return cached["servers"]
+    r = util.run_cmd(["scutil", "--dns"], timeout=5)
+    servers: list[str] = []
+    for line in r["stdout"].splitlines():
+        m = re.search(r"nameserver\[\d+\]\s*:\s*(\S+)", line)
+        ip = m.group(1) if m else None
+        if (ip and ip not in servers and ip != "0.0.0.0"
+                and re.match(r"^\d+\.\d+\.\d+\.\d+$", ip)):
+            servers.append(ip)
+        if len(servers) >= max_n:
+            break
+    _CACHE["sys_dns"] = {"ts": util.now_ts(), "servers": servers}
+    return servers
+
+
 def env_snapshot(cfg: dict) -> dict:
     if _CACHE.get("env_snapshot"):
         return _CACHE["env_snapshot"]
@@ -545,6 +568,15 @@ def collect(cfg: dict, tick_index: int = 0) -> dict:
     for srv in dns_cfg.get("external_servers", []):
         first_name = (dns_cfg.get("names") or ["www.baidu.com"])[0]
         tasks.append(("dns_ext", probe_dns, (first_name, srv, int(dns_cfg.get("timeout_seconds", 3)))))
+    # 网卡实际下发的 DNS（DHCP/VPN/手动配置）逐台直测——不测它就发现不了
+    # "路由器 DNS 被劫持 / DHCP 下发了坏 DNS / VPN DNS 失效"这类问题
+    if dns_cfg.get("auto_system_dns", True):
+        first_name = (dns_cfg.get("names") or ["www.baidu.com"])[0]
+        ext_set = set(dns_cfg.get("external_servers", []))
+        for srv in system_dns_servers():
+            if srv in ext_set:
+                continue  # 已在 external_servers 里直测过，不重复
+            tasks.append(("dns_auto", probe_dns, (first_name, srv, int(dns_cfg.get("timeout_seconds", 3)))))
     for url in http_cfg.get("urls", []):
         tasks.append(("http", probe_http, (url, float(http_cfg.get("timeout_seconds", 4)))))
 
@@ -565,7 +597,8 @@ def collect(cfg: dict, tick_index: int = 0) -> dict:
         wf = collect_wifi(cfg, tick_index) if re.match(r"^en\d", phys or "") else {}
         return info, phys, cnt, wf
 
-    results: dict[str, list] = {"gateway": [], "icmp": [], "tcp": [], "dns": [], "dns_ext": [], "http": []}
+    results: dict[str, list] = {"gateway": [], "icmp": [], "tcp": [], "dns": [], "dns_ext": [],
+                                "dns_auto": [], "http": []}
     timings: dict[str, float] = {}
     with ThreadPoolExecutor(max_workers=min(16, len(tasks) + 4)) as ex:
         futures = [(kind, ex.submit(fn, *args)) for kind, fn, args in tasks]
@@ -603,6 +636,7 @@ def collect(cfg: dict, tick_index: int = 0) -> dict:
         "tcp": results["tcp"],
         "dns": results["dns"],
         "dns_ext": results["dns_ext"],
+        "dns_auto": results["dns_auto"],
         "http": results["http"],
         "iface_info": iface_info,
         "counters": counters,

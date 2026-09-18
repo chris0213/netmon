@@ -34,6 +34,7 @@ DEFAULTS: dict = {
     "dns": {
         "names": ["www.baidu.com", "www.aliyun.com"],
         "external_servers": ["223.5.5.5"],
+        "auto_system_dns": True,       # 自动发现网卡下发的 DNS 并逐台直测（最多 3 台）
         "timeout_seconds": 3,
     },
 

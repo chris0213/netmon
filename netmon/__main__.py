@@ -74,6 +74,9 @@ def print_once(tick: dict, status: str, reasons: list[str], metrics: dict) -> No
         print(f"  DNS  系统解析器 -> {d['name']}", f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
     for d in tick.get("dns_ext", []):
         print(f"  DNS  @{d['server']} -> {d['name']}", f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
+    for d in tick.get("dns_auto", []):
+        print(f"  DNS  网卡自动@{d['server']} -> {d['name']}",
+              f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
     for h in tick.get("http", []):
         print(f"  HTTP {h['url'][:52]}", f"{h['status']} {h['ms']}ms" if h.get("ok") else f"失败 {h.get('error')}")
     w = tick.get("wifi") or {}
@@ -314,11 +317,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
     cache: dict = {"body": None, "ticks": None, "html_key": None, "ticks_key": None}
 
     def _fingerprint() -> tuple:
-        """数据文件 mtime 指纹：数据没变化时直接复用缓存，避免每个请求全量读盘+重渲染。"""
+        """数据文件 mtime 指纹：数据没变化时直接复用缓存，避免每个请求全量读盘+重渲染。
+        同时纳入 netmon 源码 mtime——代码更新后缓存自动失效，serve 不必手动重启。"""
         parts = []
         for p in sorted(DATA_DIR.glob("*.jsonl")):
             try:
                 parts.append((p.name, p.stat().st_mtime_ns))
+            except OSError:
+                continue
+        pkg_dir = Path(__file__).resolve().parent
+        for src in sorted(pkg_dir.glob("*.py")):
+            try:
+                parts.append(("src:" + src.name, src.stat().st_mtime_ns))
             except OSError:
                 continue
         return tuple(parts)
