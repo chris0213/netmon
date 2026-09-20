@@ -5,6 +5,7 @@ from __future__ import annotations
 import plistlib
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 LABEL = "com.netmon.probe"
@@ -13,8 +14,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _python() -> str:
-    exe = sys.executable
-    return exe if exe and Path(exe).exists() else "/usr/bin/python3"
+    exe = sys.executable or ""
+    # WorkBuddy 托管解释器（~/.workbuddy/binaries）运行在沙箱内，launchd
+    # 直接拉起会因无法连接沙箱 broker 而失败（bootstrap 报 error 5，实测）。
+    # 服务一律退回系统解释器——纯标准库实现，对版本无要求。
+    if ".workbuddy" in exe or not exe or not Path(exe).exists():
+        return "/usr/bin/python3"
+    return exe
 
 
 def build_plist(interval: int, log_dir: Path) -> dict:
@@ -39,6 +45,23 @@ def build_plist(interval: int, log_dir: Path) -> dict:
     }
 
 
+def _bootout(uid: str) -> None:
+    """卸载服务并等待 job 真正从 gui 域消失。
+
+    bootout 是异步的：对 KeepAlive 常驻进程发 SIGTERM 后立即返回，但 job
+    注销需要时间——立刻 bootstrap 会撞上报错 "Bootstrap failed: 5:
+    Input/output error"（用户实测复现过）。这里轮询直到 print 失败为止。
+    """
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"],
+                   capture_output=True, text=True)
+    for _ in range(30):  # 最多等约 3 秒
+        r = subprocess.run(["launchctl", "print", f"gui/{uid}/{LABEL}"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return
+        time.sleep(0.1)
+
+
 def install(interval: int, log_dir: Path) -> dict:
     PLIST.parent.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -46,9 +69,7 @@ def install(interval: int, log_dir: Path) -> dict:
     with PLIST.open("wb") as fh:
         plistlib.dump(data, fh)
     uid = str(Path.home().stat().st_uid)
-    # 先卸载旧的，避免重复加载报错
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"],
-                   capture_output=True, text=True)
+    _bootout(uid)
     r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(PLIST)],
                        capture_output=True, text=True)
     ok = r.returncode == 0
@@ -60,8 +81,7 @@ def install(interval: int, log_dir: Path) -> dict:
 
 def uninstall() -> dict:
     uid = str(Path.home().stat().st_uid)
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}/{LABEL}"],
-                   capture_output=True, text=True)
+    _bootout(uid)
     existed = PLIST.exists()
     if existed:
         PLIST.unlink()

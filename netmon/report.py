@@ -50,11 +50,14 @@ h2{font-size:15px;margin:0 0 14px;font-weight:650;letter-spacing:.01em;display:f
 h2 .idx{font-family:var(--mono);font-size:11px;color:var(--fg3);font-weight:500}
 .sub{color:var(--fg2);font-size:13px;margin:0}
 .meta{color:var(--fg3);font-size:12px;font-family:var(--mono);margin-top:8px;line-height:1.75}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin-bottom:16px;
+  box-shadow:0 1px 2px rgba(16,24,40,.04)}
 .section{margin-top:26px}
 .grid{display:grid;gap:12px}
 .kpis{grid-template-columns:repeat(auto-fit,minmax(158px,1fr))}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;
+  position:relative;overflow:hidden}
+.kpi:before{content:"";position:absolute;left:0;top:0;right:0;height:3px;background:var(--kpi-c,var(--line))}
 .kpi .k{font-size:12px;color:var(--fg2);margin-bottom:6px}
 .kpi .v{font-size:23px;font-weight:640;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .kpi .n{font-size:11px;color:var(--fg3);margin-top:4px;font-family:var(--mono)}
@@ -91,6 +94,10 @@ details[open] summary:before{content:"- "}
 pre{background:#0f172a;color:#d7dee9;padding:12px 14px;border-radius:8px;overflow:auto;
   font-family:var(--mono);font-size:11.5px;line-height:1.55;margin:10px 0 0;max-height:340px}
 .bad{color:var(--bad)}.ok{color:var(--ok)}.warnc{color:var(--warn)}
+.grade{display:inline-block;vertical-align:4px;margin-left:12px;padding:3px 13px;border-radius:20px;
+  border:1px solid;font-size:12.5px;font-weight:700;letter-spacing:.05em}
+tbody tr:hover td{background:#fafbfd}
+.layer-note{font-size:12px;color:var(--fg3);margin:12px 2px 0;line-height:1.7}
 footer{color:var(--fg3);font-size:11.5px;margin-top:34px;border-top:1px solid var(--line);padding-top:14px;
   font-family:var(--mono);line-height:1.8}
 """
@@ -301,10 +308,63 @@ def bar_row(label: str, ok: int, total: int, width: int = 1080) -> str:
 # ------------------------------------------------------------------ 报告主体
 
 def _kpi(k: str, v: str, n: str = "", color: str | None = None) -> str:
-    style = f' style="color:{color}"' if color else ""
+    style = f' style="color:{color};--kpi-c:{color}"' if color else ""
     return (f'<div class="kpi"><div class="k">{_esc(k)}</div>'
             f'<div class="v"{style}>{_esc(v)}</div>'
             f'<div class="n">{_esc(n)}</div></div>')
+
+
+def _grade(summary: dict) -> tuple[str, str]:
+    """综合评级：可用率 + 硬中断次数双门限。"""
+    up = summary.get("uptime_pct") or 0
+    hard = summary.get("hard_incident_count") or 0
+    hard_up = summary.get("hard_uptime_pct")
+    hard_up = 100 if hard_up is None else hard_up
+    if up >= 99.9 and hard == 0:
+        return "优", "#16a34a"
+    if up >= 99 and hard_up >= 99.5:
+        return "良", "#65a30d"
+    if up >= 98:
+        return "中", "#d97706"
+    return "差", "#dc2626"
+
+
+def _layer_row(label: str, bad: int, total: int, width: int = 1080) -> str:
+    ok = total - bad
+    rate = ok * 100.0 / total if total else 100.0
+    if bad == 0:
+        color = "#16a34a"
+    elif rate >= 99:
+        color = "#d97706"
+    else:
+        color = "#dc2626"
+    bw = int(rate / 100 * (width - 340))
+    note = "无异常" if bad == 0 else f"异常 {bad} 次"
+    return (
+        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
+        f'<div style="width:150px;font-size:12.5px;color:#475467">{_esc(label)}</div>'
+        f'<div style="flex:1;height:10px;background:#f2f4f7;border-radius:5px;overflow:hidden">'
+        f'<div style="width:{bw}px;max-width:100%;height:100%;background:{color}"></div></div>'
+        f'<div class="mono" style="width:150px;text-align:right;color:#475467">{rate:.2f}% · {_esc(note)}</div></div>'
+    )
+
+
+def _layer_bars(ticks: list[dict], cfg: dict) -> str:
+    """分层健康条：每个采样点按 classify 的最高优先级归入一个异常层，
+    条形为该层健康采样占比——哪一层出故障一眼可见。"""
+    if not ticks:
+        return ""
+    cnt: Counter = Counter()
+    for t in ticks:
+        st, _, _ = analyze.classify(t, cfg)
+        cnt[st] += 1
+    total = len(ticks)
+    rows = []
+    for st in analyze.STATUS_ORDER:
+        if st == "ok":
+            continue
+        rows.append(_layer_row(analyze.STATUS_LABEL.get(st, st), cnt.get(st, 0), total))
+    return "".join(rows)
 
 
 def _status_tag(status: str) -> str:
@@ -494,9 +554,11 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             f'<ul class="actions">{checks}</ul></details>'
         )
 
-    # ---------------- 结论
+    # ---------------- 结论（按健康度着色）+ 综合评级徽章
+    hard_cnt = 0 if summary.get("empty") else (summary.get("hard_incident_count") or 0)
+    v_color = "#dc2626" if hard_cnt else ("#d97706" if incidents else "#16a34a")
     verdict_html = (
-        f'<div class="card verdict"><h3>{_esc(vd["headline"])}</h3><ul>'
+        f'<div class="card verdict" style="border-left-color:{v_color}"><h3>{_esc(vd["headline"])}</h3><ul>'
         + "".join(f"<li>{_esc(b)}</li>" for b in vd["bullets"])
         + "</ul>"
         + ('<ul class="actions">' + "".join(
@@ -506,6 +568,15 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
         ) + "</ul>" if vd.get("actions") else "")
         + "</div>"
     )
+    if summary.get("empty"):
+        grade_badge = ""
+    else:
+        g, gc = _grade(summary)
+        grade_badge = (f'<span class="grade" style="color:{gc};background:{gc}14;'
+                       f'border-color:{gc}55">评级 {g}</span>')
+
+    # ---------------- 分层健康条
+    layer_html = _layer_bars(ticks, cfg) if ticks else ""
 
     # ---------------- KPI
     if summary.get("empty"):
@@ -591,7 +662,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 
 <header class="top">
   <div>
-    <h1>{_esc(title)}</h1>
+    <h1>{_esc(title)}{grade_badge}</h1>
     <p class="sub">分层探针采集 · 自动归因 · 离线可读</p>
   </div>
   <div class="meta">
@@ -605,13 +676,20 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 <div class="grid kpis">{kpis}</div>
 
 <div class="section">
-  <h2><span class="idx">01</span>可用性时间带</h2>
+  <h2><span class="idx">01</span>分层健康总览</h2>
+  <div class="card">{layer_html or '<p class="sub">暂无数据</p>'}
+    <p class="layer-note">每个采样点按最高优先级归入一个异常层（无线链路 → 网关 → 外网 → DNS → 传输质量 → 信号强度），条形为该层健康采样占比。哪一层条形不满格，故障就在哪一层。</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2><span class="idx">02</span>可用性时间带</h2>
   <div class="legend">{legend}</div>
   <div class="card" style="padding:16px 18px">{ribbon(ticks, cfg) if ticks else '<p class="sub">暂无数据</p>'}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">02</span>延迟与丢包</h2>
+  <h2><span class="idx">03</span>延迟与丢包</h2>
   <div class="legend">
     <span><i style="background:#1d4ed8"></i>外网（最快目标）</span>
     <span><i style="background:#0891b2"></i>外网（最慢目标）</span>
@@ -623,27 +701,27 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 </div>
 
 <div class="section">
-  <h2><span class="idx">03</span>无线信号质量</h2>
+  <h2><span class="idx">04</span>无线信号质量</h2>
   <div class="card" style="padding:14px 10px 6px">{wifi_svg or '<p class="sub" style="padding:8px">本轮未采集到无线数据（有线接口或未开启无线采集）。</p>'}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">04</span>各层探针成功率</h2>
+  <h2><span class="idx">05</span>各层探针成功率</h2>
   <div class="card">{probe_html or '<p class="sub">暂无数据</p>'}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">05</span>异常事件明细</h2>
+  <h2><span class="idx">06</span>异常事件明细</h2>
   <div class="card">{incidents_html}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">06</span>逐层排查手册</h2>
+  <h2><span class="idx">07</span>逐层排查手册</h2>
   <div class="card">{''.join(manual)}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">07</span>采集环境快照</h2>
+  <h2><span class="idx">08</span>采集环境快照</h2>
   <div class="card"><dl class="dl">{env_html}</dl></div>
 </div>
 
