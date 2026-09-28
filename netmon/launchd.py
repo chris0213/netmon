@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import plistlib
 import subprocess
 import sys
@@ -14,13 +15,26 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _python() -> str:
+    """为 launchd plist 选定一个"稳定"的 Python 解释器路径。
+
+    安装时会把返回值写死进 plist 的 ProgramArguments，因此必须避开一切
+    "可能被删除/迁移"的临时解释器，否则 KeepAlive 会在该解释器消失后静默崩溃：
+      1) WorkBuddy 托管解释器（~/.workbuddy/binaries）运行在 seatbelt 沙箱内，
+         launchd 直接拉起会因连不上沙箱 broker 而 bootstrap 报 error 5（实测）。
+      2) venv / pyenv / conda 内的解释器：用户退出或删除环境后路径即失效，
+         退回其"基座"解释器（sys.base_prefix/bin/python3）更稳。
+      3) 其余情况用当前解释器，但需确实存在于磁盘。
+    """
     exe = sys.executable or ""
-    # WorkBuddy 托管解释器（~/.workbuddy/binaries）运行在沙箱内，launchd
-    # 直接拉起会因无法连接沙箱 broker 而失败（bootstrap 报 error 5，实测）。
-    # 服务一律退回系统解释器——纯标准库实现，对版本无要求。
-    if ".workbuddy" in exe or not exe or not Path(exe).exists():
+    if ".workbuddy" in exe:
         return "/usr/bin/python3"
-    return exe
+    if getattr(sys, "prefix", "") and sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        cand = os.path.join(sys.base_prefix, "bin", "python3")
+        if os.path.exists(cand):
+            return cand
+    if exe and Path(exe).exists():
+        return exe
+    return "/usr/bin/python3"
 
 
 def build_plist(interval: int, log_dir: Path) -> dict:
@@ -40,7 +54,9 @@ def build_plist(interval: int, log_dir: Path) -> dict:
         "KeepAlive": True,
         "ThrottleInterval": 20,
         "StandardOutPath": str(log_dir / "launchd.out.log"),
-        "StandardErrorPath": str(log_dir / "launchd.err.log"),
+        # 错误流并入 netmon.log：store.py 已对 netmon.log 做 5MB 轮转，
+        # 避免服务崩溃循环时 launchd.err.log 无上限增长撑爆磁盘。
+        "StandardErrorPath": str(log_dir / "netmon.log"),
         "ProcessType": "Background",
     }
 

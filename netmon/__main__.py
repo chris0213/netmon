@@ -513,6 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < (3, 9):
+        print(f"netmon 需要 Python 3.9+，当前为 {sys.version_info.major}.{sys.version_info.minor}",
+              file=sys.stderr)
+        return 2
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):

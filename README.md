@@ -6,6 +6,8 @@
 
 上图为合成样例（`tools/demo_report.py`，覆盖 5 类典型故障），用于预览断网被捕获后的报告形态。可直接打开 [`reports/demo-report.html`](reports/demo-report.html) 查看。
 
+> ⚠️ **部署形态**：netmon 是 macOS **桌面工具**，作为 LaunchAgent 运行在**本机**，监控的是运行它的那台 Mac 自身网络（ARP / 网关 / 外网 / DNS / 无线 + 断网取证）。它**不支持 Linux / Docker / 服务器集中部署**——Linux 上既没有 `PF_ROUTE`、`scutil`、`system_profiler` 也没有 `launchctl` 等价实现。集中式多机监控不在当前 MVP 范围。
+
 ## 为什么是这个方案
 
 排查偶发断连，最大的困难不是"修"，而是"抓不到"。常见的三种做法都不够：
@@ -151,8 +153,8 @@ python3 -m netmon purge                # 再清空
 ## 环境要求
 
 - macOS（已在 macOS 15 / Apple Silicon 上实测）
-- Python 3.9+（系统自带即可，无第三方依赖）
-- 可选：`dig`（随系统提供）用于 DNS 探针
+- Python 3.9+（系统自带 `/usr/bin/python3` 即可，无第三方依赖）
+- 可选：Command Line Tools 提供的 `dig`，用于外网 DNS 直连比对；缺失时自动降级，不影响主流程
 
 ## License
 

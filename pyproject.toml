@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netmon"
+version = "0.1.0"
+description = "macOS 网络断连定时监控与自动归因工具"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+netmon = "netmon.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["netmon*"]
