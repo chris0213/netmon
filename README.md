@@ -4,6 +4,12 @@
 
 针对"Mac 电脑偶尔断网"这类**间歇性、难复现**问题设计的轻量探针。它不解决断网，它负责在断网发生的那一刻**把现场证据钉下来**，并给出定位结论。
 
+## 下载
+
+**macOS 桌面版（Apple 芯片）**：前往 [Releases 页面](https://github.com/chris0213/netmon/releases/latest) 下载 `NetMon-1.0.0-release.zip`（含 DMG + 中文安装说明）。仅支持 arm64 / macOS 11+，无需安装 Python 或任何依赖。
+
+源码运行与自行打包见下方「安装与运行」。
+
 报告形态可直接打开 [`reports/demo-report.html`](reports/demo-report.html) 预览（合成样例，由 `tools/demo_report.py` 生成，覆盖 5 类典型故障）。报告默认脱敏内网 IP/MAC。
 
 > ⚠️ **部署形态**：netmon 是 macOS **桌面工具**，作为 LaunchAgent 运行在**本机**，监控的是运行它的那台 Mac 自身网络（ARP / 网关 / 外网 / DNS / 无线 + 断网取证）。它**不支持 Linux / Docker / 服务器集中部署**——Linux 上既没有 `PF_ROUTE`、`scutil`、`system_profiler` 也没有 `launchctl` 等价实现。集中式多机监控不在当前 MVP 范围。
