@@ -27,3 +27,12 @@ config.local.json
 
 # AI 助手工作目录（会话记忆，非项目代码）
 .workbuddy/
+
+# 早期截图含真实内网地址，不入库
+docs/screenshot.png
+
+# 桌面版打包产物（可由 packaging/build_app.py 重新生成）
+dist/
+packaging/NetMon.iconset/
+packaging/*.icns
+packaging/netmon.png

@@ -58,11 +58,13 @@ def parse_ping(text: str) -> dict:
     }
 
 
-def do_ping(host: str, count: int = 2, wait_ms: int = 800, total_s: int = 2) -> dict:
-    r = util.run_cmd(
-        ["ping", "-n", "-c", str(count), "-W", str(wait_ms), "-t", str(total_s), host],
-        timeout=total_s + 2.5,
-    )
+def do_ping(host: str, count: int = 2, wait_ms: int = 800, total_s: int = 2,
+            interval_ms: int | None = None) -> dict:
+    cmd = ["ping", "-n", "-c", str(count), "-W", str(wait_ms), "-t", str(total_s)]
+    if interval_ms:
+        cmd += ["-i", f"{interval_ms / 1000:.2f}"]
+    cmd.append(host)
+    r = util.run_cmd(cmd, timeout=total_s + 2.5)
     out = parse_ping(r["stdout"] + "\n" + r["stderr"])
     out["host"] = host
     out["cmd_ms"] = r["ms"]
@@ -382,7 +384,10 @@ def probe_gateway(cfg: dict, gw: str | None) -> dict:
 
 
 def probe_icmp_target(spec: dict) -> dict:
-    p = do_ping(spec["host"], count=2, wait_ms=800, total_s=2)
+    # 4 包 @0.2s 连发。样本量必须够：2 包时丢 1 个就是 50%，远超 20% 告警阈值，
+    # 而公网目标偶发丢一个包很常见（ICMP 限速/排队），会产生大量假告警。
+    # 连发比默认 1 秒间隔更快，4 包约 0.65s（原 2 包串行约 1.1s）。
+    p = do_ping(spec["host"], count=4, wait_ms=600, total_s=3, interval_ms=200)
     return {
         "name": spec.get("name") or spec["host"],
         "host": spec["host"],
@@ -410,12 +415,73 @@ def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict:
         s.close()
 
 
+def _resolve_via_socket(name: str) -> dict:
+    """dig 缺失时的兜底：用系统解析器判断"域名能否解析"。
+
+    局限：getaddrinfo 无法指定上游 DNS，只能验证系统解析器这一条路径；
+    超时由系统解析器自身策略决定。返回结构与 probe_dns 对齐。
+    """
+    t0 = time.monotonic()
+    try:
+        answers: list[str] = []
+        for info in socket.getaddrinfo(name, None):
+            ip = info[4][0]
+            if ip not in answers:
+                answers.append(ip)
+        return {
+            "ok": bool(answers),
+            "answers": answers[:4],
+            "status": "NOERROR" if answers else None,
+            "ms": round((time.monotonic() - t0) * 1000, 1),
+            "error": None if answers else "no_answer",
+        }
+    except socket.gaierror as exc:
+        return {
+            "ok": False,
+            "answers": [],
+            "status": "NXDOMAIN" if exc.errno == socket.EAI_NONAME else None,
+            "ms": round((time.monotonic() - t0) * 1000, 1),
+            "error": "gaierror",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "answers": [],
+            "status": None,
+            "ms": round((time.monotonic() - t0) * 1000, 1),
+            "error": type(exc).__name__,
+        }
+
+
 def probe_dns(name: str, server: str | None, timeout_s: int = 3) -> dict:
     cmd = ["dig", f"+time={timeout_s}", "+tries=1", "+short"]
     if server:
         cmd += [f"@{server}"]
     cmd.append(name)
     r = util.run_cmd(cmd, timeout=timeout_s + 3)
+
+    # dig 不存在（rc=-2）不等于解析失败，必须与真实故障区分开：
+    #   - 系统解析器：用 getaddrinfo 兜底，判定照常进行
+    #   - 指定服务器：标准库无法直连指定 DNS，标记 ok=None 表示"未采集"，
+    #     由判定侧排除，避免伪装成一次 DNS 解析失败
+    if r["rc"] == -2:
+        missing = "dig_missing" if r["stderr"] == "FileNotFoundError" else "dig_unavailable"
+        if server:
+            return {
+                "name": name,
+                "server": server,
+                "ok": None,
+                "answers": [],
+                "status": None,
+                "ms": r["ms"],
+                "error": missing,
+                "source": "unavailable",
+                "skipped": True,
+            }
+        res = _resolve_via_socket(name)
+        res.update({"name": name, "server": "system", "source": "socket"})
+        return res
+
     answers = [ln for ln in r["stdout"].splitlines() if ln.strip()]
     status = None
     for line in (r["stdout"] + r["stderr"]).splitlines():
@@ -430,6 +496,7 @@ def probe_dns(name: str, server: str | None, timeout_s: int = 3) -> dict:
         "status": status,
         "ms": r["ms"],
         "error": None if answers else (status or r["stderr"].strip()[:80] or "no_answer"),
+        "source": "dig",
     }
 
 

@@ -1,5 +1,6 @@
 """netmon 命令行入口。
 
+  python3 -m netmon gui                   打开图形控制台（桌面版）
   python3 -m netmon once                  采集一次并打印，用于快速自检
   python3 -m netmon run                   常驻采集（前台）
   python3 -m netmon run --duration 600    限时采集，用于试跑
@@ -71,16 +72,22 @@ def print_once(tick: dict, status: str, reasons: list[str], metrics: dict) -> No
     for t in tick.get("tcp", []):
         print(f"  TCP  {t['host']}:{t['port']}", f"{t['ms']}ms" if t.get("ok") else f"失败 {t.get('error')}")
     for d in tick.get("dns", []):
-        print(f"  DNS  系统解析器 -> {d['name']}", f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
+        src = "（socket 兜底）" if d.get("source") == "socket" else ""
+        print(f"  DNS  系统解析器 -> {d['name']}",
+              (f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}") + src)
     for d in tick.get("dns_ext", []):
-        print(f"  DNS  @{d['server']} -> {d['name']}", f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
+        print(f"  DNS  @{d['server']} -> {d['name']}",
+              f"未采集 {d.get('error')}" if d.get("ok") is None
+              else (f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}"))
     for d in tick.get("dns_auto", []):
         print(f"  DNS  网卡自动@{d['server']} -> {d['name']}",
-              f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}")
+              f"未采集 {d.get('error')}" if d.get("ok") is None
+              else (f"{d['ms']}ms" if d.get("ok") else f"失败 {d.get('error')}"))
     if (metrics or {}).get("dns_note"):
         print("  DNS  提示    ", metrics["dns_note"])
     for h in tick.get("http", []):
-        print(f"  HTTP {h['url'][:52]}", f"{h['status']} {h['ms']}ms" if h.get("ok") else f"失败 {h.get('error')}")
+        print(f"  HTTP {str(h.get('url') or h.get('host') or '未知目标')[:52]}",
+              f"{h.get('status')} {h.get('ms')}ms" if h.get("ok") else f"失败 {h.get('error')}")
     w = tick.get("wifi") or {}
     if w.get("device"):
         print(f"  无线      {w.get('band')} ch{w.get('channel')} {w.get('width')} "
@@ -98,12 +105,18 @@ def print_once(tick: dict, status: str, reasons: list[str], metrics: dict) -> No
 
 # ------------------------------------------------------------------ 常驻采集
 
+# 质量类异常：需连续多轮才确认。硬故障（断链/断网关/断外网/DNS）不在此列，立即告警。
+QUALITY_CLASSES = {"degraded", "weak_signal"}
+
+
 class Watcher:
     """维护"当前是否处于事件中"的状态机，负责触发取证。"""
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.incident: dict | None = None
+        self._streak = 0
+        self._streak_class: str | None = None
         self.last_forensic_ts = 0.0
         self.last_prune_ts = 0.0
         self.runs: list[dict] = []
@@ -121,7 +134,23 @@ class Watcher:
                 self.incident["end_ts"] = tick["ts"]
                 store.log(f"事件结束 {self.incident['class']} 于 {iso(tick['ts'])}")
             self.incident = None
+            self._streak = 0
+            self._streak_class = None
             return
+
+        # 质量类异常沿用与 analyze.build_incidents 相同的连续轮次门槛：
+        # 单点抖动既不告警也不取证，否则日志里有 WARN、报告里却 0 事件，口径互相打架。
+        if status in QUALITY_CLASSES:
+            if status == self._streak_class:
+                self._streak += 1
+            else:
+                self._streak = 1
+                self._streak_class = status
+            need = max(1, int(self.cfg.get("thresholds", {}).get("degraded_streak", 2)))
+            if self.incident is None and self._streak < need:
+                store.log(f"质量抖动 {status}（第 {self._streak}/{need} 轮，未达确认门槛）："
+                          f"{'；'.join(reasons)}")
+                return
 
         if self.incident is None:
             self.incident = {"start_ts": tick["ts"], "class": status, "reasons": list(reasons)}
@@ -192,6 +221,13 @@ class Watcher:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    lock = store.acquire_run_lock()
+    if lock is None:
+        pid = store.is_running()
+        suffix = f"（PID {pid}）" if pid else ""
+        print(f"已有采集进程在运行{suffix}，本次启动已跳过。", file=sys.stderr)
+        return 3
+
     cfg = load_config(args.config)
     interval = float(args.interval or cfg["interval_seconds"])
     cfg["interval_seconds"] = interval
@@ -223,6 +259,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             store.append_tick(tick)
             watcher.observe(tick, status, reasons)
             watcher.maybe_prune(tick)
+            store.rotate_stdout_log()
             print(fmt_line(tick, status, reasons, metrics), flush=True)
         except Exception as exc:  # noqa: BLE001 - 采集循环绝不能因单次异常退出
             store.log(f"采集异常：{type(exc).__name__}: {exc}", level="ERROR")
@@ -238,6 +275,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         store.pid_path().unlink()
     except OSError:
         pass
+    lock.close()
     print("-" * 100)
     print(f"采集结束，共 {tick_index} 个采样点。生成报告：python3 -m netmon report")
     return 0
@@ -301,7 +339,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     if ticks:
         incidents = analyze.build_incidents(ticks, cfg)
         s = analyze.summarize(ticks, incidents, cfg)
-        print(f"最近一天     {s['tick_count']} 采样点 / 可用率 {s['uptime_pct']}% / 事件 {s['incident_count']} 次")
+        print(f"最近一天     {s['tick_count']} 采样点 / 可用率 {s.get('sample_uptime_pct', s['uptime_pct'])}% / 事件 {s['incident_count']} 次"
+              f" / 覆盖 {s.get('coverage_pct', 100)}%")
     pid = store.is_running()
     print(f"前台进程     {'运行中 pid=' + str(pid) if pid else '未运行'}")
     print(f"后台服务     {'已加载 pid=' + str(st['pid']) if st['loaded'] else '未加载'}"
@@ -388,14 +427,17 @@ def cmd_serve(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------ 其它
 
 def cmd_install(args: argparse.Namespace) -> int:
+    if not launchd.status()["loaded"] and not store.run_lock_available():
+        print("检测到前台采集进程正在运行。请先停止它，再安装常驻服务。", file=sys.stderr)
+        return 1
     cfg = load_config(args.config)
     interval = int(args.interval or cfg["interval_seconds"])
     res = launchd.install(interval, DATA_DIR)
     if res["ok"]:
         print(f"已安装常驻服务 {launchd.LABEL}（间隔 {interval}s）")
         print(f"  plist: {res['plist']}")
-        print(f"  日志 : {DATA_DIR / 'launchd.err.log'}")
-        print("  查看 : launchctl print gui/$(id -u)/com.netmon.probe | head -20")
+        print(f"  日志 : {DATA_DIR / 'launchd.out.log'}")
+        print(f"  查看 : launchctl print gui/$(id -u)/{launchd.LABEL} | head -20")
     else:
         print("安装失败：", res["stderr"] or res["stdout"])
         return 1
@@ -455,6 +497,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace) -> int:  # noqa: ARG001
+    """打开图形控制台。延迟导入，避免纯 CLI 命令无谓加载 tkinter。"""
+    from .gui import main as gui_main
+    return gui_main()
+
+
 # ------------------------------------------------------------------ 主入口
 
 def build_parser() -> argparse.ArgumentParser:
@@ -472,6 +520,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--interval", type=float, default=None, help="采样间隔（秒）")
     sp.add_argument("--duration", type=float, default=None, help="采集时长（秒），不填则一直跑")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("gui", help="打开图形控制台（桌面版）")
+    sp.set_defaults(func=cmd_gui)
 
     sp = sub.add_parser("once", help="采集一次并打印")
     sp.add_argument("--save", action="store_true", help="同时落盘")

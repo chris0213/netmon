@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import copy
 import html
 import json
 import platform
+import re
 from collections import Counter, defaultdict
+from urllib.parse import urlsplit
 
 from . import analyze, util
 from .config import REPORT_DIR
@@ -20,6 +23,128 @@ def _esc(v) -> str:
     return html.escape(str(v)) if v is not None else "-"
 
 
+# ------------------------------------------------------------------ 隐私脱敏
+# 报告是可分享的单文件 HTML：默认隐藏本机身份与内网拓扑。
+# 只做展示层脱敏，不改动采集到的原始数据（磁盘 jsonl 保持原样，排障仍可用）。
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_MAC_RE = re.compile(r"\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b")
+
+
+def _is_global(ip: str) -> bool:
+    """公网 IP 保留（排障有价值）；私网/回环/链路本地一律隐藏。"""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        a, b = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    if a in (0, 10, 127) or a >= 224:
+        return False
+    if a == 192 and b == 168:
+        return False
+    if a == 172 and 16 <= b <= 31:
+        return False
+    if a == 169 and b == 254:
+        return False
+    return True
+
+
+def _redact_ip(ip: str) -> str:
+    if _is_global(ip):
+        return ip
+    parts = ip.split(".")
+    return f"{parts[0]}.{parts[1]}.*.*" if len(parts) == 4 else "*"
+
+
+def _redact_mac(mac: str) -> str:
+    """只留厂商前缀（OUI），隐藏设备标识。"""
+    p = mac.split(":")
+    return ":".join(p[:3] + ["**"] * 3) if len(p) == 6 else "**:**:**:**:**:**"
+
+
+def _redact_text(text: str) -> str:
+    text = _IPV4_RE.sub(lambda m: _redact_ip(m.group(0)), text)
+    return _MAC_RE.sub(lambda m: _redact_mac(m.group(0)), text)
+
+
+def _redact_config(cfg: dict) -> dict:
+    """复制一份配置用于渲染，探测目标里的内网地址也脱敏。"""
+    out = copy.deepcopy(cfg)
+    for t in out.get("icmp_targets", []):
+        if t.get("host"):
+            t["host"] = _redact_text(str(t["host"]))
+    dns = out.get("dns", {})
+    dns["external_servers"] = [_redact_text(str(x)) for x in dns.get("external_servers", [])]
+    out["http"] = dict(out.get("http", {}))
+    out["http"]["urls"] = [_redact_text(str(x)) for x in out["http"].get("urls", [])]
+    return out
+
+
+def _redact_tick(t: dict) -> dict:
+    """脱敏单个采样点里会被渲染到的身份/拓扑字段，数值与判定字段原样保留。"""
+    r = copy.deepcopy(t)
+    gw = r.get("gateway") or {}
+    if gw.get("host"):
+        gw["host"] = _redact_text(str(gw["host"]))
+    arp = gw.get("arp") or {}
+    if arp.get("mac"):
+        arp["mac"] = _redact_mac(str(arp["mac"]))
+    if (gw.get("icmp") or {}).get("host"):
+        gw["icmp"]["host"] = _redact_text(str(gw["icmp"]["host"]))
+    iface = r.get("iface_info") or {}
+    iface["ipv4"] = [_redact_text(str(x)) for x in (iface.get("ipv4") or [])]
+    if iface.get("ether"):
+        iface["ether"] = _redact_mac(str(iface["ether"]))
+    for key in ("dns", "dns_ext", "dns_auto"):
+        for d in r.get(key) or []:
+            if d.get("server"):
+                d["server"] = _redact_text(str(d["server"]))
+            if d.get("answers"):
+                d["answers"] = [_redact_text(str(a)) for a in d["answers"]]
+    for key in ("icmp", "tcp"):
+        for x in r.get(key) or []:
+            if x.get("host"):
+                x["host"] = _redact_text(str(x["host"]))
+    for x in r.get("http") or []:
+        if x.get("url"):
+            x["url"] = _redact_text(str(x["url"]))
+    route = r.get("route") or {}
+    if route.get("gateway"):
+        route["gateway"] = _redact_text(str(route["gateway"]))
+    return r
+
+
+def _redact_evidence(ev: dict) -> dict:
+    """断网取证快照含 ifconfig/arp 全文，逐字段脱敏 IP 与 MAC。"""
+    r = copy.deepcopy(ev)
+    for key in ("ifconfig", "route_get", "scutil_nwi", "arp", "output", "wifi"):
+        v = r.get(key)
+        if isinstance(v, str):
+            r[key] = _redact_text(v)
+    return r
+
+
+def _http_host(item: dict) -> str:
+    """从 http 探针条目里安全提取主机名。
+
+    历史数据中部分超时条目只写了 {ok, error} 而没有 url，
+    早期采集也可能写入非标准 URL。此处统一兜底，避免 KeyError/IndexError。
+    """
+    url = item.get("url")
+    if not isinstance(url, str) or not url:
+        return item.get("host") or "未知目标"
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        host = None
+    if host:
+        return host
+    # urlsplit 拿不到主机名时，退回按 '/' 切分（兼容无协议写法）
+    parts = url.split("/")
+    return parts[2] if len(parts) > 2 and parts[2] else (parts[0] or "未知目标")
+
+
 def _rel(path) -> str:
     """报告里一律显示相对路径，避免把本机绝对路径写进可分享的 HTML。"""
     from pathlib import Path
@@ -28,6 +153,18 @@ def _rel(path) -> str:
         return str(Path(path).relative_to(root))
     except ValueError:
         return str(path)
+
+
+def _break_gaps(points: list[tuple], threshold: float) -> list[tuple]:
+    """相邻采样间隔过大时插入空值，避免折线把未采集时段画成连续。"""
+    out: list[tuple] = []
+    prev: float | None = None
+    for t, v in points:
+        if prev is not None and t - prev > threshold:
+            out.append((prev, None))
+        out.append((t, v))
+        prev = t
+    return out
 
 
 CSS = """
@@ -110,6 +247,7 @@ def line_chart(
     x0: float,
     x1: float,
     bands: list[tuple[float, float]] | None = None,
+    gap_bands: list[tuple[float, float]] | None = None,
     height: int = 230,
     width: int = 1080,
     pad_l: int = 52,
@@ -167,6 +305,15 @@ def line_chart(
         f'<svg viewBox="0 0 {w} {h}" role="img" xmlns="http://www.w3.org/2000/svg">',
         f'<rect x="0" y="0" width="{w}" height="{h}" fill="#ffffff"/>',
     ]
+
+    # 未采集时段背景带（浅灰），先画，避免盖住红色断网带
+    for b0, b1 in (gap_bands or []):
+        xa, xb = max(X(b0), pad_l), min(X(b1), pad_l + inner_w)
+        if xb > xa:
+            out.append(
+                f'<rect x="{xa:.1f}" y="{pad_t}" width="{max(xb - xa, 1.6):.1f}" '
+                f'height="{inner_h}" fill="#f2f4f7" opacity="0.85"/>'
+            )
 
     # 断网时段背景带
     for b0, b1 in (bands or []):
@@ -315,10 +462,13 @@ def _kpi(k: str, v: str, n: str = "", color: str | None = None) -> str:
 
 
 def _grade(summary: dict) -> tuple[str, str]:
-    """综合评级：可用率 + 硬中断次数双门限。"""
-    up = summary.get("uptime_pct") or 0
+    """综合评级：采样覆盖不足时先降级为「样本不足」，避免稀疏采样误判为健康。"""
+    coverage = summary.get("coverage_pct", 100)
+    if summary.get("tick_count", 0) < 10 or coverage < 80:
+        return "样本不足", "#d97706"
+    up = summary.get("sample_uptime_pct", summary.get("uptime_pct", 0))
     hard = summary.get("hard_incident_count") or 0
-    hard_up = summary.get("hard_uptime_pct")
+    hard_up = summary.get("sample_hard_uptime_pct", summary.get("hard_uptime_pct"))
     hard_up = 100 if hard_up is None else hard_up
     if up >= 99.9 and hard == 0:
         return "优", "#16a34a"
@@ -396,10 +546,28 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     vd = analyze.verdict(summary, incidents, cfg)
     env = env or {}
 
+    # 隐私脱敏：默认开启。判定（上面）已用原始数据完成，口径不受影响；
+    # 此处把后续渲染要用的四个变量整体替换为脱敏副本，绝不回写磁盘。
+    if cfg.get("privacy", {}).get("redact_in_report", True):
+        cfg = _redact_config(cfg)
+        for k in ("host", "nameservers", "gateway", "wifi_card"):
+            v = env.get(k)
+            if isinstance(v, str):
+                env[k] = _redact_text(v)
+            elif isinstance(v, list):
+                env[k] = [_redact_text(str(x)) for x in v]
+        evidence = [_redact_evidence(e) for e in evidence]
+        ticks = [_redact_tick(t) for t in ticks]
+
+    interval = float(cfg.get("interval_seconds", 30))
     span_start = ticks[0]["ts"] if ticks else util.now_ts()
     span_end = ticks[-1]["ts"] if ticks else util.now_ts()
     if len(ticks) > 1:
-        span_end += float(cfg.get("interval_seconds", 30))
+        span_end += interval
+    gap_threshold = max(interval * 2, 90)
+    all_ts = sorted(t["ts"] for t in ticks)
+    gaps = [(a, b) for a, b in zip(all_ts, all_ts[1:]) if b - a > gap_threshold]
+    gap_text = "；".join(f"{util.iso(a)} → {util.iso(b)}" for a, b in gaps[:3]) or "无"
 
     bands = [(i["start_ts"], i["end_ts"]) for i in incidents
              if i["class"] in ("link_down", "lan_down", "wan_down", "dns_fail")]
@@ -432,6 +600,15 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     rssi_pts = util.downsample(rssi_pts, max_pts)
     noise_pts = util.downsample(noise_pts, max_pts)
 
+    # 空档两侧断线，避免把没采到的时间画成连续曲线
+    gw_pts = _break_gaps(gw_pts, gap_threshold)
+    wan_pts = _break_gaps(wan_pts, gap_threshold)
+    wan_max_pts = _break_gaps(wan_max_pts, gap_threshold)
+    loss_pts = _break_gaps(loss_pts, gap_threshold)
+    loss_max_pts = _break_gaps(loss_max_pts, gap_threshold)
+    rssi_pts = _break_gaps(rssi_pts, gap_threshold)
+    noise_pts = _break_gaps(noise_pts, gap_threshold)
+
     th = cfg["thresholds"]
     latency_svg = line_chart(
         [
@@ -440,7 +617,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             {"name": "外网（最快目标）", "color": "#1d4ed8", "points": wan_pts, "width": 1.5},
             {"name": "网关", "color": "#64748b", "points": gw_pts, "width": 1.0, "opacity": 0.8},
         ],
-        span_start, span_end, bands=bands, unit="ms",
+        span_start, span_end, bands=bands, gap_bands=gaps, unit="ms",
         refline=float(th.get("rtt_warn_ms", 150)), refline_label="告警阈值 150ms",
     )
     loss_svg = line_chart(
@@ -449,7 +626,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
              "opacity": 0.85},
             {"name": "平均丢包", "color": "#ea580c", "points": loss_pts, "width": 1.4},
         ],
-        span_start, span_end, bands=bands, unit="%", height=170,
+        span_start, span_end, bands=bands, gap_bands=gaps, unit="%", height=170,
         refline=float(th.get("loss_warn_pct", 20)), refline_label="告警阈值 20%",
     )
 
@@ -460,7 +637,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
                 {"name": "信号强度 RSSI", "color": "#1d4ed8", "points": rssi_pts, "width": 1.5},
                 {"name": "噪声底 Noise", "color": "#98a2b3", "points": noise_pts, "width": 1.1},
             ],
-            span_start, span_end, bands=bands, unit="dBm", height=200,
+            span_start, span_end, bands=bands, gap_bands=gaps, unit="dBm", height=200,
             refline=float(th.get("rssi_warn_dbm", -70)), refline_label="弱信号门限 -70dBm",
         )
 
@@ -480,15 +657,19 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             probe_stats[k][1] += 1
             probe_stats[k][0] += 1 if x.get("ok") else 0
         for x in t.get("dns_ext", []):
+            if x.get("ok") is None:
+                continue  # dig 不可用导致未采集，不计入成功率
             k = f"DNS 直连 {x['server']}"
             probe_stats[k][1] += 1
             probe_stats[k][0] += 1 if x.get("ok") else 0
         for x in t.get("dns_auto", []):
+            if x.get("ok") is None:
+                continue  # dig 不可用导致未采集，不计入成功率
             k = f"DNS 网卡下发 {x['server']}"
             probe_stats[k][1] += 1
             probe_stats[k][0] += 1 if x.get("ok") else 0
         for x in t.get("http", []):
-            k = f"HTTP {x['url'].split('/')[2]}"
+            k = f"HTTP {_http_host(x)}"
             probe_stats[k][1] += 1
             probe_stats[k][0] += 1 if x.get("ok") else 0
         for x in t.get("tcp", []):
@@ -554,6 +735,9 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             f'<ul class="actions">{checks}</ul></details>'
         )
 
+    manual_html = ("".join(manual) if incidents
+                   else '<p class="sub">本次未触发异常事件，无需排查。</p>')
+
     # ---------------- 结论（按健康度着色）+ 综合评级徽章
     hard_cnt = 0 if summary.get("empty") else (summary.get("hard_incident_count") or 0)
     v_color = "#dc2626" if hard_cnt else ("#d97706" if incidents else "#16a34a")
@@ -582,10 +766,14 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     if summary.get("empty"):
         kpis = _kpi("采样点", "0", "尚未采集数据")
     else:
-        up = summary["uptime_pct"]
+        up = summary.get("sample_uptime_pct", summary["uptime_pct"])
         up_color = "#16a34a" if up >= 99.5 else ("#d97706" if up >= 98 else "#dc2626")
+        coverage = summary.get("coverage_pct", 100)
+        coverage_color = "#16a34a" if coverage >= 80 else "#d97706"
         kpis = (
-            _kpi("整体可用率", f"{up}%", f"硬中断可用率 {summary['hard_uptime_pct']}%", up_color)
+            _kpi("整体可用率", f"{up}%",
+                 f"基于 {summary['tick_count']} 个采样点 · 硬中断 {summary.get('sample_hard_uptime_pct', summary['hard_uptime_pct'])}%",
+                 up_color)
             + _kpi("异常事件", str(summary["incident_count"]),
                    f"其中瞬断 {summary['bleep_count']} 次",
                    "#dc2626" if summary["hard_incident_count"] else "#16a34a")
@@ -597,7 +785,9 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
                    f"P95 {summary.get('loss_p95') if summary.get('loss_p95') is not None else '-'}%")
             + _kpi("无线信号", f"{summary.get('rssi_avg') if summary.get('rssi_avg') is not None else '-'} dBm",
                    f"最低 {summary.get('rssi_min') if summary.get('rssi_min') is not None else '-'} dBm / SNR {summary.get('snr_avg') if summary.get('snr_avg') is not None else '-'} dB")
-            + _kpi("观测时长", summary["span_human"], f"{summary['tick_count']} 个采样点")
+            + _kpi("采样覆盖率", f"{coverage}%",
+                   f"有效 {summary.get('effective_span_human', '-')} / 跨度 {summary['span_human']}",
+                   coverage_color)
         )
 
     # ---------------- 网关存活信号统计（观测期内所有含网关的采样点）
@@ -630,6 +820,11 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     env_rows = [
         ("主机", env.get("host") or f"{platform.node()} · macOS {platform.mac_ver()[0]}"),
         ("采集区间", f"{util.iso(span_start)} → {util.iso(span_end)}"),
+        ("采样完整性",
+         f"{summary.get('tick_count', 0)}/{summary.get('expected_ticks', '-')} 点 · "
+         f"有效 {summary.get('effective_span_human', '-')} / 跨度 {summary.get('span_human', '-')} · "
+         f"覆盖率 {summary.get('coverage_pct', '-')}%"),
+        ("未采集时段", f"{gap_text}（共 {summary.get('gap_count', len(gaps))} 段）"),
         ("采样间隔", f"{cfg.get('interval_seconds')} 秒"),
         ("默认路由接口", _esc(env.get("interface") or (ticks[0].get("iface") if ticks else "-") or "-")),
         ("网关", gw_row),
@@ -638,17 +833,18 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
         ("ICMP 判定目标", "、".join(
             f"{t['name']}({t['host']})" for t in cfg.get("icmp_targets", []) if t.get("actor")) or "-"),
         ("HTTP 探针", "、".join(cfg.get("http", {}).get("urls", [])) or "-"),
-        ("数据目录", _rel(REPORT_DIR.parent / "data")),
-        ("报告目录", _rel(REPORT_DIR)),
+        ("数据目录", str(REPORT_DIR.parent / "data")),
+        ("报告目录", str(REPORT_DIR)),
     ]
     env_html = "".join(
         f'<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>' for k, v in env_rows
     )
 
-    legend = "".join(
-        f'<span><i style="background:{c}"></i>{_esc(analyze.STATUS_LABEL[s])}</span>'
-        for s, c in analyze.STATUS_COLOR.items()
-    )
+    legend = ('<span><i style="background:#f2f4f7;border:1px solid #cfd4dc"></i>无数据</span>'
+              + "".join(
+                  f'<span><i style="background:{c}"></i>{_esc(analyze.STATUS_LABEL[s])}</span>'
+                  for s, c in analyze.STATUS_COLOR.items()
+              ))
 
     n_days = len({util.day_str(t["ts"]) for t in ticks}) if ticks else 0
     title = f"网络健康报告 {util.day_str(span_start)}" + ("" if n_days <= 1 else f" ~ {util.day_str(span_end)}")
@@ -667,7 +863,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
   </div>
   <div class="meta">
     生成时间 {_esc(util.iso(util.now_ts()))}<br>
-    采样点 {summary.get("tick_count", 0)} · 覆盖 {summary.get("span_human", "-")}
+    采样点 {summary.get("tick_count", 0)} · 有效采样 {summary.get("effective_span_human", "-")} · 时间跨度 {summary.get("span_human", "-")}
   </div>
 </header>
 
@@ -695,6 +891,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     <span><i style="background:#0891b2"></i>外网（最慢目标）</span>
     <span><i style="background:#64748b"></i>网关</span>
     <span><i style="background:#dc2626;opacity:.35"></i>硬中断时段</span>
+    <span><i style="background:#f2f4f7;border:1px solid #cfd4dc"></i>未采集空档</span>
   </div>
   <div class="card" style="padding:14px 10px 6px">{latency_svg}
   <div style="margin-top:10px">{loss_svg}</div></div>
@@ -717,7 +914,7 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 
 <div class="section">
   <h2><span class="idx">07</span>逐层排查手册</h2>
-  <div class="card">{''.join(manual)}</div>
+  <div class="card">{manual_html}</div>
 </div>
 
 <div class="section">
@@ -726,8 +923,8 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 </div>
 
 <footer>
-  netmon · 数据目录 {_esc(_rel(REPORT_DIR.parent / "data"))} · 报告目录 {_esc(_rel(REPORT_DIR))}<br>
-  重新生成：python3 -m netmon report --days 7 &nbsp;|&nbsp; 导出 CSV：python3 -m netmon export
+  netmon · 数据目录 {_esc(str(REPORT_DIR.parent / "data"))} · 报告目录 {_esc(str(REPORT_DIR))}<br>
+  跨天汇总：python3 -m netmon report --days N &nbsp;|&nbsp; 导出 CSV：python3 -m netmon export
 </footer>
 
 </div></body></html>

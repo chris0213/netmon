@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 源码根目录：模块文件的父目录的父目录。打包成 .app 后指向 bundle 内的 Resources/app，
+# 始终跟随代码本身，用于 launchd 的 PYTHONPATH / WorkingDirectory。
+SRC_ROOT = Path(__file__).resolve().parent.parent
+
+# 数据根目录：配置、data/、reports/ 的落点。
+#  - 未设置 NETMON_HOME（源码直跑）→ 等同 SRC_ROOT，行为与旧版完全一致（向后兼容）。
+#  - 设置 NETMON_HOME（.app / launchd 注入）→ 指向 ~/Library/Application Support/NetMon，
+#    实现代码与数据分离：升级/重装 app 不会碰用户采集数据。
+_ROOT_OVERRIDE = os.environ.get("NETMON_HOME")
+ROOT = Path(_ROOT_OVERRIDE).expanduser() if _ROOT_OVERRIDE else SRC_ROOT
 CONFIG_PATH = ROOT / "config.json"
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
@@ -80,6 +90,13 @@ DEFAULTS: dict = {
 
     "interface": "auto",               # auto = 跟随默认路由接口
     "timezone_note": "",
+
+    # 分享安全：报告是可转发的单文件 HTML，默认隐藏本机身份与内网拓扑。
+    # 关闭后报告会显示真实内网 IP/MAC/网关（仅本地排障时建议，勿外发）。
+    # 注意：这只影响报告展示，磁盘上的原始采样数据始终完整保存。
+    "privacy": {
+        "redact_in_report": True,
+    },
 }
 
 

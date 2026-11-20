@@ -142,3 +142,21 @@ def ensure_dir(p: Path) -> Path:
 def tail_lines(text: str, n: int) -> list[str]:
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     return lines[-n:] if n > 0 else lines
+
+
+def move_to_trash(path: Path) -> Path:
+    """把文件或目录移入废纸篓，返回移动后的路径。
+
+    卸载类动作必须可撤销，所以不做 rm。改名冲突时追加时间戳，避免覆盖
+    用户先前放进废纸篓的同名文件。
+    """
+    import shutil
+
+    path = Path(path)
+    trash = Path.home() / ".Trash"
+    trash.mkdir(parents=True, exist_ok=True)
+    dest = trash / path.name
+    if dest.exists():
+        dest = trash / f"{path.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    shutil.move(str(path), str(dest))
+    return dest

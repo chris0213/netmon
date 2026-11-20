@@ -78,5 +78,8 @@
     "capture_snapshot": true
   },
   "interface": "auto",
-  "timezone_note": ""
+  "timezone_note": "",
+  "privacy": {
+    "redact_in_report": true
+  }
 }

@@ -4,9 +4,7 @@
 
 针对"Mac 电脑偶尔断网"这类**间歇性、难复现**问题设计的轻量探针。它不解决断网，它负责在断网发生的那一刻**把现场证据钉下来**，并给出定位结论。
 
-![报告预览](docs/screenshot.png)
-
-上图为合成样例（`tools/demo_report.py`，覆盖 5 类典型故障），用于预览断网被捕获后的报告形态。可直接打开 [`reports/demo-report.html`](reports/demo-report.html) 查看。
+报告形态可直接打开 [`reports/demo-report.html`](reports/demo-report.html) 预览（合成样例，由 `tools/demo_report.py` 生成，覆盖 5 类典型故障）。报告默认脱敏内网 IP/MAC。
 
 > ⚠️ **部署形态**：netmon 是 macOS **桌面工具**，作为 LaunchAgent 运行在**本机**，监控的是运行它的那台 Mac 自身网络（ARP / 网关 / 外网 / DNS / 无线 + 断网取证）。它**不支持 Linux / Docker / 服务器集中部署**——Linux 上既没有 `PF_ROUTE`、`scutil`、`system_profiler` 也没有 `launchctl` 等价实现。集中式多机监控不在当前 MVP 范围。
 
@@ -21,6 +19,22 @@
 | 上 Zabbix / Grafana 之类 | 外部监控只能测"到这台机器/从这台机器出去"，测不到 Wi-Fi 关联、ARP、DNS 这些本机视角 |
 
 `netmon` 的取舍：**本机视角 + 分层探针 + 极低开销 + 断网时自动取证**。数据是纯文本 JSONL，断网了也能用 `grep`/`tail` 直接看。
+
+## 桌面版（推荐）
+
+不想敲命令？用打包好的 macOS 应用：双击打开、图形界面点按钮即可**启动/停止监控**和**生成报告**。桌面版报告只覆盖最新采集日；需要跨天汇总时用命令行 `python3 -m netmon report --days 7`。
+
+```bash
+open dist/NetMon-1.0.0.dmg    # 把 网哨 NetMon 拖进 Applications 即可安装
+```
+
+**自带运行时**：app 内嵌 Python 与 Tcl/Tk 9，接收方**不需要安装任何东西**——既不会因为没装 Python 打不开，也不会因为系统自带 Tk 8.5 白屏。代价是体积：app 42MB / DMG 23MB。当前构建为 **arm64，最低 macOS 11.0**；给 Intel Mac 打包需指定 universal2 运行时，见 **[docs/DESKTOP.md](docs/DESKTOP.md)**。
+
+**发给同事**：直接用 `dist/NetMon-1.0.0-release.zip`（内含 DMG + 中文安装说明）。应用已做 ad-hoc 签名，报告默认脱敏内网 IP/MAC，可安全转发。同事首次打开若被 Gatekeeper 拦，按说明「右键 → 打开」即可。详见 **[docs/安装说明-给同事.md](docs/安装说明-给同事.md)**。
+
+桌面版与命令行是同一套引擎，数据放在 `~/Library/Application Support/NetMon/`，升级 app 不会丢数据。应用被移动后会在启动时自动修正后台服务的绝对路径；卸载走界面底栏的 **卸载 NetMon…**（服务必卸，数据与应用可选，一律进废纸篓）。完整安装、操作与重新打包说明见 **[docs/DESKTOP.md](docs/DESKTOP.md)**。
+
+源码直跑图形界面：`python3 -m netmon gui`（或 `./netmon.sh gui`）。
 
 ## 判定逻辑
 
@@ -39,6 +53,8 @@ ok
 **关键设计：网关存活用三路信号冗余判定 —— ARP 表项 / ICMP 回显 / TCP RST，任一路成立即视为存活。** 绝大多数路由器默认屏蔽 ICMP echo，如果拿 `ping 网关` 当判据，会得到大量假故障。而连接被 `ConnectionRefused` 拒绝恰恰证明对方 IP 栈是活的，这一点常被误读为失败。三路全灭才判定网关不可达。
 
 **外网判定用加权投票而不是单点 ping。** `1.1.1.1`、`8.8.8.8` 在国内不稳定，配置里通过 `weight` / `actor` 控制，避免"被墙"被误读成"断网"。
+
+**质量类异常（`degraded` / `weak_signal`）要连续 `degraded_streak`（默认 2）轮才确认**，单轮抖动只记为观察、不告警也不取证；硬故障（断链 / 断网关 / 断外网 / DNS）不受此限，立即告警。丢包判定还额外要求单轮**至少丢 2 个包**才采信——每轮 ICMP 发 4 个包，丢 1 个就是 25%，而公网目标被 ICMP 限速时丢单包很常见，不设这道门槛会刷出大量假告警。
 
 ## 用法
 
@@ -125,12 +141,19 @@ netmon/
     report.py        单文件离线 HTML 报告（手写内联 SVG 图表）
     forensics.py     断网瞬间取证
     launchd.py       常驻服务安装
+    gui.py           桌面版图形控制台（tkinter，浅色主题）
   tools/
     demo_report.py   合成数据回归 + 样例报告生成
+  packaging/         桌面版打包脚本（纯标准库 + 系统工具）
+    make_icon.py     生成 icns / 窗口图标
+    build_app.py     生成 .app bundle（默认内嵌 Python 运行时）
+    embed_python.py  收集/裁剪/校验自包含运行时（含 Tcl/Tk）
+    make_release.py  组装 DMG + 转发用 zip
   config.json        配置
-  docs/              README 用截图
+  docs/              README 用截图 + DESKTOP.md 桌面版说明
   data/              ticks-YYYY-MM-DD.jsonl / evidence-*.jsonl / netmon.log（不入库）
   reports/           生成的 HTML 报告（不入库，仅保留 demo-report.html）
+  dist/              打包产物 NetMon.app / NetMon-1.0.0.dmg（不入库）
 ```
 
 ## 报告怎么读

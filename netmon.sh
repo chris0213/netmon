@@ -1,5 +1,6 @@
 #!/bin/sh
 # netmon 便捷入口，用法与 `python3 -m netmon` 完全一致：
+#   ./netmon.sh gui                      打开图形控制台（桌面版）
 #   ./netmon.sh once
 #   ./netmon.sh run --duration 120 --interval 10
 #   ./netmon.sh report --open

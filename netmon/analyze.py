@@ -139,12 +139,21 @@ def _worst_rtt(tick: dict) -> tuple[float | None, str | None]:
     return round(float(v), 2), n
 
 
-def _worst_loss(tick: dict) -> tuple[float | None, str | None]:
+def _worst_loss(tick: dict, min_lost: int = 2) -> tuple[float | None, str | None]:
+    """最差丢包目标。
+
+    min_lost 是采信门槛：默认要求至少丢 2 个包。每轮 ICMP 只发 4 个包，丢 1 个
+    就是 25%，而公网目标偶发丢单个包很常见（ICMP 限速、排队、镜像口拥塞），
+    在小样本下放大成百分比并按 20% 阈值判异常会造成大量假告警。
+    展示场景可传 min_lost=0 取原始最差值，判定场景保持默认门槛。
+    缺 sent/recv 的历史数据在默认门槛下不采信——宁可漏报，不制造噪音。
+    """
     cands = [(t["loss_pct"], t.get("name") or t["host"]) for t in tick.get("icmp", [])
-             if t.get("actor") and isinstance(t.get("loss_pct"), (int, float))]
+             if t.get("actor") and isinstance(t.get("loss_pct"), (int, float))
+             and (t.get("sent") or 0) - (t.get("recv") or 0) >= min_lost]
     if not cands:
         return None, None
-    v, n = max(cands)
+    v, n = max(cands, key=lambda c: c[0])
     return round(float(v), 1), n
 
 
@@ -208,7 +217,9 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
 
     # 一次性求出"最差路径"，metrics 构造与下面的判定共用，避免重复计算
     rtt_max, rtt_max_host = _worst_rtt(tick)
-    loss_max, loss_max_host = _worst_loss(tick)
+    # 展示用原始最差值（含单包丢失），判定用"至少丢 2 包"的确认值
+    loss_max, loss_max_host = _worst_loss(tick, min_lost=0)
+    loss_conf, loss_conf_host = _worst_loss(tick)
 
     metrics = {
         "wan_ratio": _wan_ratio(tick),
@@ -260,15 +271,21 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     sys_ok, ext_ok = metrics["dns_sys_ok"], metrics["dns_ext_ok"]
     if not sys_ok:
         auto_results = metrics["dns_auto_all"]
-        if ext_ok and auto_results and not metrics["dns_auto_ok"]:
-            bad_auto = "、".join(d["server"] for d in auto_results if not d.get("ok"))
+        # ok=None 表示该探针未采集（如本机缺少 dig），不能算作"解析失败"
+        ext_ran = any(d.get("ok") is not None for d in tick.get("dns_ext", []))
+        auto_ran = any(d.get("ok") is not None for d in auto_results)
+        if ext_ok and auto_results and auto_ran and not metrics["dns_auto_ok"]:
+            bad_auto = "、".join(d["server"] for d in auto_results
+                                if d.get("ok") is False)
             reasons.append(f"系统解析器与网卡下发的 DNS（{bad_auto}）同时失败，"
                            "但直连公共 DNS 成功 → 路由器/DHCP 下发的 DNS 配置问题，"
                            "可临时改用公共 DNS 验证")
         elif ext_ok:
             reasons.append("系统解析器失败，但直连 223.5.5.5 成功 → 本机 DNS 配置问题")
-        else:
+        elif ext_ran or auto_ran:
             reasons.append("系统解析器与外部 DNS 同时失败")
+        else:
+            reasons.append("系统解析器解析失败（本机缺少 dig，外部 DNS 直连未采集）")
         if metrics["dns_note"] and "劫持" in metrics["dns_note"]:
             reasons.append(metrics["dns_note"])
         return "dns_fail", reasons, metrics
@@ -276,8 +293,8 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     # 5. 质量层：用"最差路径"判定，避免被其他正常目标的均值稀释
     rtt = metrics["rtt_max"]
     rtt_host = metrics["rtt_max_host"]
-    loss = metrics["loss_max"]
-    loss_host = metrics["loss_max_host"]
+    loss = loss_conf
+    loss_host = loss_conf_host
     jitter = metrics["jitter_ms"]
     rssi = metrics["rssi_dbm"]
     noise = metrics["noise_dbm"]
@@ -435,7 +452,18 @@ def summarize(ticks: list[dict], incidents: list[dict], cfg: dict) -> dict:
     interval = float(cfg.get("interval_seconds", 30))
     if not ticks:
         return {"empty": True}
-    span = max(t["ts"] for t in ticks) - min(t["ts"] for t in ticks) + interval
+    ts = sorted(t["ts"] for t in ticks)
+    span = ts[-1] - ts[0] + interval
+    gaps = [(a, b) for a, b in zip(ts, ts[1:]) if b - a > interval * 2]
+    gap_total = sum(max(0.0, b - a - interval) for a, b in gaps)
+    # 有效采样 = 观察跨度 - 真实空档。早期用 len(ticks)*interval 作分子，
+    # 因每轮采集有约 0.1s 开销、实际间隔略大于标称，连续采样也会算成 <100%。
+    # 改为从跨度里扣空档：连续采样得 100%，有空档时仍如实反映。
+    effective = max(interval, span - gap_total)
+    statuses = [classify(t, cfg)[0] for t in ticks]
+    bad = sum(1 for s in statuses if s != "ok")
+    hard_bad = sum(1 for s in statuses
+                   if s in {"link_down", "lan_down", "wan_down", "dns_fail"})
     downtime = sum(i["duration_s"] for i in incidents)
     by_class = Counter(i["class"] for i in incidents)
     hard_classes = {"link_down", "lan_down", "wan_down", "dns_fail"}
@@ -459,9 +487,8 @@ def summarize(ticks: list[dict], incidents: list[dict], cfg: dict) -> dict:
     # 分小时统计最差时段
     hour_bad: dict[int, int] = defaultdict(int)
     hour_total: dict[int, int] = defaultdict(int)
-    for t in ticks:
+    for t, st in zip(ticks, statuses):
         h = util.hour_of(t["ts"])
-        st, _, _ = classify(t, cfg)
         hour_total[h] += 1
         if st != "ok":
             hour_bad[h] += 1
@@ -481,6 +508,16 @@ def summarize(ticks: list[dict], incidents: list[dict], cfg: dict) -> dict:
         "end": util.iso(max(t["ts"] for t in ticks)),
         "span_s": round(span, 1),
         "span_human": util.human_duration(span),
+        "effective_span_s": round(effective, 1),
+        "effective_span_human": util.human_duration(effective),
+        "coverage_pct": util.pct(effective, span),
+        "expected_ticks": max(1, round(span / interval)),
+        "gap_count": len(gaps),
+        "gap_total_s": round(gap_total, 1),
+        "gap_total_human": util.human_duration(gap_total),
+        "gaps": [{"start_ts": a, "end_ts": b} for a, b in gaps],
+        "sample_uptime_pct": util.pct(len(ticks) - bad, len(ticks)),
+        "sample_hard_uptime_pct": util.pct(len(ticks) - hard_bad, len(ticks)),
         "uptime_pct": util.pct(span - downtime, span),
         "hard_uptime_pct": util.pct(span - hard_downtime, span),
         "incident_count": len(incidents),
@@ -508,10 +545,22 @@ def verdict(summary: dict, incidents: list[dict], cfg: dict) -> dict:
     if summary.get("empty"):
         return {"headline": "暂无采集数据。", "bullets": [], "focus": "ok", "actions": []}
 
+    coverage = summary.get("coverage_pct", 100)
+    low_conf = summary.get("tick_count", 0) < 10 or coverage < 80
+    conf_note = ""
+    if low_conf:
+        conf_note = (
+            f"采样覆盖 {coverage}%（有效 {summary.get('effective_span_human', '-')} / "
+            f"跨度 {summary.get('span_human', '-')}），存在 "
+            f"{summary.get('gap_count', 0)} 段未采集时段，结论仅供参考。"
+        )
+
     if summary["incident_count"] == 0:
         bullets = [
             f"整段观测期内 {summary['tick_count']} 次采样全部正常，未捕获到断网事件。",
         ]
+        if conf_note:
+            bullets.insert(0, conf_note)
         if summary.get("rtt_avg") is not None:
             bullets.append(f"平均延迟 {summary['rtt_avg']} ms，P95 {summary.get('rtt_p95')} ms。")
         if summary.get("rssi_min") is not None:
@@ -519,7 +568,9 @@ def verdict(summary: dict, incidents: list[dict], cfg: dict) -> dict:
                 f"无线信号最低 {summary['rssi_min']} dBm，均值 {summary.get('rssi_avg')} dBm。"
             )
         return {
-            "headline": "未复现故障 —— 说明断连是间歇性的，需要延长观测窗口。",
+            "headline": ("样本不足，暂不能判定网络健康 —— 需延长有效观测时间。"
+                         if low_conf else
+                         "未复现故障 —— 说明断连是间歇性的，需要延长观测窗口。"),
             "bullets": bullets,
             "focus": "ok",
             "actions": [
@@ -595,6 +646,8 @@ def verdict(summary: dict, incidents: list[dict], cfg: dict) -> dict:
             f"{summary.get('snr_avg')} dB。" if isinstance(r, (int, float))
             else f"无线信号：最低 {summary['rssi_min']} dBm，SNR 均值 {summary.get('snr_avg')} dB。"
         )
+    if conf_note:
+        bullets.insert(0, conf_note)
     if distinct < 3:
         bullets.append("最可能的原因：" + "；".join(pb["likely"]) + "。")
 
