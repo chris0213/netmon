@@ -119,10 +119,11 @@ python3 -m tools.demo_report      # 生成 reports/demo-report.html，不写入 
 
 `config.json`，改动即生效（常驻服务需重启：`netmon uninstall && netmon install`）。
 
-最常改的三个：
+最常改的几个：
 
 ```jsonc
 {
+  "language": "zh",                 // 界面与报告语言：zh 中文 / en 英文（默认 zh）
   "interval_seconds": 30,           // 采样间隔
   "thresholds": {
     "rtt_warn_ms": 150,             // 延迟告警阈值
@@ -136,6 +137,8 @@ python3 -m tools.demo_report      # 生成 reports/demo-report.html，不写入 
 ```
 
 `actor: false` 的目标只记录、不参与判定（比如被墙的境外 DNS）。
+
+**语言**：把 `language` 改成 `"en"`，桌面界面、自检详情和生成的 HTML 报告会全部切换为英文（判定逻辑与报告口径不变）；改回 `"zh"` 即恢复中文。命令行工具始终按配置输出，中文为默认。也可用环境变量 `NETMON_LANG=en` 临时覆盖配置（优先级更高）。配置改动后需重启应用/常驻服务才生效。
 
 ## 目录结构
 

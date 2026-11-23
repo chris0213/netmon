@@ -1,4 +1,5 @@
 {
+  "language": "zh",
   "interval_seconds": 30,
   "retention_days": 30,
   "gateway": {

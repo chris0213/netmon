@@ -22,6 +22,9 @@ DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 
 DEFAULTS: dict = {
+    # 界面与报告语言："zh" 中文（默认）/ "en" 英文。环境变量 NETMON_LANG 可覆盖。
+    "language": "zh",
+
     "interval_seconds": 30,
     "retention_days": 30,
 
@@ -119,6 +122,10 @@ def load_config(path: Path | None = None) -> dict:
         except (json.JSONDecodeError, OSError):
             user = {}
     cfg = _deep_merge(DEFAULTS, user)
+    # 语言在这里统一初始化：所有调用 load_config 的入口（GUI/CLI/报告）自动生效，
+    # 不必各自记得 set_language。环境变量 NETMON_LANG 优先级更高。
+    from . import i18n
+    i18n.init_from_config(cfg)
     cfg["_config_path"] = str(p)
     cfg["_root"] = str(ROOT)
     return cfg

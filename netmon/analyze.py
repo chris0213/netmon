@@ -15,7 +15,8 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 
-from . import util
+from . import i18n, util
+from .i18n import t as tr
 
 STATUS_ORDER = [
     "link_down",
@@ -541,42 +542,43 @@ def summarize(ticks: list[dict], incidents: list[dict], cfg: dict) -> dict:
 
 
 def verdict(summary: dict, incidents: list[dict], cfg: dict) -> dict:
-    """自动结论：先给判断，再给下一步。"""
+    """自动结论：先给判断，再给下一步。所有文案经 tr() 翻译，判定逻辑不变。"""
     if summary.get("empty"):
-        return {"headline": "暂无采集数据。", "bullets": [], "focus": "ok", "actions": []}
+        return {"headline": tr("暂无采集数据。"), "bullets": [], "focus": "ok", "actions": []}
 
     coverage = summary.get("coverage_pct", 100)
     low_conf = summary.get("tick_count", 0) < 10 or coverage < 80
     conf_note = ""
     if low_conf:
-        conf_note = (
-            f"采样覆盖 {coverage}%（有效 {summary.get('effective_span_human', '-')} / "
-            f"跨度 {summary.get('span_human', '-')}），存在 "
-            f"{summary.get('gap_count', 0)} 段未采集时段，结论仅供参考。"
-        )
+        conf_note = tr("采样覆盖 {cov}%（有效 {eff} / 跨度 {span}），存在 {n} 段未采集时段，结论仅供参考。",
+                       cov=coverage, eff=summary.get('effective_span_human', '-'),
+                       span=summary.get('span_human', '-'), n=summary.get('gap_count', 0))
+
+    def _label(code: str) -> str:
+        return tr(STATUS_LABEL.get(code, code))
 
     if summary["incident_count"] == 0:
         bullets = [
-            f"整段观测期内 {summary['tick_count']} 次采样全部正常，未捕获到断网事件。",
+            tr("整段观测期内 {n} 次采样全部正常，未捕获到断网事件。", n=summary['tick_count']),
         ]
         if conf_note:
             bullets.insert(0, conf_note)
         if summary.get("rtt_avg") is not None:
-            bullets.append(f"平均延迟 {summary['rtt_avg']} ms，P95 {summary.get('rtt_p95')} ms。")
+            bullets.append(tr("平均延迟 {avg} ms，P95 {p95} ms。",
+                              avg=summary['rtt_avg'], p95=summary.get('rtt_p95')))
         if summary.get("rssi_min") is not None:
-            bullets.append(
-                f"无线信号最低 {summary['rssi_min']} dBm，均值 {summary.get('rssi_avg')} dBm。"
-            )
+            bullets.append(tr("无线信号最低 {min} dBm，均值 {avg} dBm。",
+                              min=summary['rssi_min'], avg=summary.get('rssi_avg')))
         return {
-            "headline": ("样本不足，暂不能判定网络健康 —— 需延长有效观测时间。"
+            "headline": (tr("样本不足，暂不能判定网络健康 —— 需延长有效观测时间。")
                          if low_conf else
-                         "未复现故障 —— 说明断连是间歇性的，需要延长观测窗口。"),
+                         tr("未复现故障 —— 说明断连是间歇性的，需要延长观测窗口。")),
             "bullets": bullets,
             "focus": "ok",
             "actions": [
-                "把采样间隔调到 10-15 秒（config.json → interval_seconds），提高捕获瞬断的概率。",
-                "在疑似断网的时段保持工具常驻运行，至少覆盖 24 小时（含早晚高峰）。",
-                "如果只在特定应用（如 VPN、会议软件）下断，问题更可能在应用层而非链路层。",
+                tr("把采样间隔调到 10-15 秒（config.json → interval_seconds），提高捕获瞬断的概率。"),
+                tr("在疑似断网的时段保持工具常驻运行，至少覆盖 24 小时（含早晚高峰）。"),
+                tr("如果只在特定应用（如 VPN、会议软件）下断，问题更可能在应用层而非链路层。"),
             ],
         }
 
@@ -592,70 +594,70 @@ def verdict(summary: dict, incidents: list[dict], cfg: dict) -> dict:
 
     bullets: list[str] = []
     if distinct >= 3:
-        headline = (f"观测到 {distinct} 类不同形态的异常（共 {len(incidents)} 次、"
-                    f"累计 {summary['down_total_human']}）—— 这不是单一原因，需要分别处置。")
-        bullets.append("按累计时长排序，各类异常的处置方向如下：")
+        headline = tr("观测到 {n} 类不同形态的异常（共 {inc} 次、累计 {dur}）—— 这不是单一原因，需要分别处置。",
+                      n=distinct, inc=len(incidents), dur=summary['down_total_human'])
+        bullets.append(tr("按累计时长排序，各类异常的处置方向如下："))
         for cls, dur in sorted(dur_by_class.items(), key=lambda kv: -kv[1]):
-            h = PLAYBOOK.get(cls, PLAYBOOK["degraded"])["meaning"].split("。")[0]
-            bullets.append(
-                f"{STATUS_LABEL.get(cls, cls)}：{cnt_by_class[cls]} 次 / "
-                f"{util.human_duration(dur)} —— {h}。"
-            )
+            h = tr(PLAYBOOK.get(cls, PLAYBOOK["degraded"])["meaning"].split("。")[0])
+            bullets.append(tr("{label}：{cnt} 次 / {dur} —— {h}。",
+                              label=_label(cls), cnt=cnt_by_class[cls],
+                              dur=util.human_duration(dur), h=h))
     else:
-        headline = (f"共捕获 {summary['incident_count']} 次异常，累计 {summary['down_total_human']}；"
-                    f"主因指向「{STATUS_LABEL.get(dominant, dominant)}」。")
-        bullets.append(pb["meaning"])
-        parts = [f"{STATUS_LABEL.get(k, k)} {v} 次" for k, v in
+        headline = tr("共捕获 {n} 次异常，累计 {dur}；主因指向「{label}」。",
+                      n=summary['incident_count'], dur=summary['down_total_human'],
+                      label=_label(dominant))
+        bullets.append(tr(pb["meaning"]))
+        parts = [tr("{label} {n} 次", label=_label(k), n=v) for k, v in
                  sorted(cnt_by_class.items(), key=lambda kv: -kv[1])]
-        bullets.append("事件构成：" + "、".join(parts) + "。")
+        sep = ", " if i18n.is_en() else "、"
+        bullets.append(tr("事件构成：{parts}。", parts=sep.join(parts)))
 
     if summary.get("bleep_count"):
         n_ble = summary["bleep_count"]
         n_inc = summary.get("incident_count", 0)
         if n_ble == n_inc == 1:
             bullets.append(
-                "这 1 次异常为单点采样即恢复的瞬断 —— 最影响体感、也最难抓，"
-                "说明链路存在亚秒到数十秒级的短暂失联。"
+                tr("这 1 次异常为单点采样即恢复的瞬断 —— 最影响体感、也最难抓，说明链路存在亚秒到数十秒级的短暂失联。")
             )
         else:
             bullets.append(
-                f"其中 {n_ble} 次为单点采样即恢复的瞬断 —— "
-                "这类最影响体感、也最难抓，说明链路存在亚秒到数十秒级的短暂失联。"
+                tr("其中 {n} 次为单点采样即恢复的瞬断 —— 这类最影响体感、也最难抓，说明链路存在亚秒到数十秒级的短暂失联。", n=n_ble)
             )
     if summary.get("worst_hour"):
         w = summary["worst_hour"]
-        span = f"{w['hour']:02d}:00-{w['hour'] + 1:02d}:00（异常占比 {w['rate']}%）"
+        span = tr("{hour}:00-{next}:00（异常占比 {rate}%）",
+                  hour=f"{w['hour']:02d}", next=f"{w['hour'] + 1:02d}", rate=w['rate'])
         if summary.get("incident_count", 0) >= 3:
-            bullets.append(
-                f"高发时段：{span}，可用于对照单位网络的分时段策略或邻居 AP 的负载规律。"
-            )
+            bullets.append(tr("高发时段：{span}，可用于对照单位网络的分时段策略或邻居 AP 的负载规律。", span=span))
         else:
-            # 样本太少时称"高发"是统计话术错误，改用中性表述
-            bullets.append(f"发生时段：{span}，事件样本尚少，暂不足以归纳时段规律。")
+            bullets.append(tr("发生时段：{span}，事件样本尚少，暂不足以归纳时段规律。", span=span))
     if summary.get("rtt_avg") is not None:
         def _r(v) -> str:
             return f"{v:.1f}" if isinstance(v, (int, float)) else "-"
         bullets.append(
-            f"延迟：均值 {_r(summary.get('rtt_avg'))} ms / P95 {_r(summary.get('rtt_p95'))} ms / "
-            f"最差路径 {_r(summary.get('rtt_worst'))} ms。"
+            tr("延迟：均值 {avg} ms / P95 {p95} ms / 最差路径 {worst} ms。",
+               avg=_r(summary.get('rtt_avg')), p95=_r(summary.get('rtt_p95')),
+               worst=_r(summary.get('rtt_worst')))
         )
     if summary.get("rssi_min") is not None:
         r = summary.get("rssi_avg")
-        bullets.append(
-            f"无线信号：最低 {summary['rssi_min']} dBm / 均值 {r:.1f} dBm / SNR 均值 "
-            f"{summary.get('snr_avg')} dB。" if isinstance(r, (int, float))
-            else f"无线信号：最低 {summary['rssi_min']} dBm，SNR 均值 {summary.get('snr_avg')} dB。"
-        )
+        if isinstance(r, (int, float)):
+            bullets.append(tr("无线信号：最低 {min} dBm / 均值 {avg} dBm / SNR 均值 {snr} dB。",
+                              min=summary['rssi_min'], avg=f"{r:.1f}", snr=summary.get('snr_avg')))
+        else:
+            bullets.append(tr("无线信号：最低 {min} dBm，SNR 均值 {snr} dB。",
+                              min=summary['rssi_min'], snr=summary.get('snr_avg')))
     if conf_note:
         bullets.insert(0, conf_note)
     if distinct < 3:
-        bullets.append("最可能的原因：" + "；".join(pb["likely"]) + "。")
+        sep = "; " if i18n.is_en() else "；"
+        bullets.append(tr("最可能的原因：{reasons}。", reasons=sep.join(tr(x) for x in pb["likely"])))
 
     if distinct >= 3:
         actions: list[str] = []
         for cls, _ in sorted(dur_by_class.items(), key=lambda kv: -kv[1])[:2]:
-            for t, c in PLAYBOOK.get(cls, PLAYBOOK["degraded"])["checks"][:3]:
-                actions.append(f"[{STATUS_LABEL.get(cls, cls)}] {t}：{c}")
+            for task, cmd in PLAYBOOK.get(cls, PLAYBOOK["degraded"])["checks"][:3]:
+                actions.append(tr("[{label}] {task}：{cmd}", label=_label(cls), task=tr(task), cmd=tr(cmd)))
     else:
-        actions = [f"{t}：{c}" for t, c in pb["checks"]]
+        actions = [tr("{task}：{cmd}", task=tr(task), cmd=tr(cmd)) for task, cmd in pb["checks"]]
     return {"headline": headline, "bullets": bullets, "focus": dominant, "actions": actions}

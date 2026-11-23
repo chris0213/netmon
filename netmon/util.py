@@ -86,6 +86,15 @@ def day_start_ts(d: str) -> float:
 
 def human_duration(seconds: float) -> str:
     seconds = int(round(seconds))
+    from .i18n import is_en
+    if is_en():
+        if seconds < 60:
+            return f"{seconds}s"
+        m, s = divmod(seconds, 60)
+        if m < 60:
+            return f"{m}m {s}s" if s else f"{m}min"
+        h, m = divmod(m, 60)
+        return f"{h}h {m}m" if m else f"{h}h"
     if seconds < 60:
         return f"{seconds} 秒"
     m, s = divmod(seconds, 60)

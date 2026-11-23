@@ -22,7 +22,8 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
-from . import __version__, analyze, launchd, probe, report, store, util
+from . import __version__, analyze, i18n, launchd, probe, report, store, util
+from .i18n import t as tr
 from .config import CONFIG_PATH, DATA_DIR, REPORT_DIR, load_config
 
 # ================================================================== 样式 token
@@ -278,11 +279,11 @@ class StatusPill(tk.Canvas):
         self.delete("all")
         w, h = 126, 28
         if self._state == "alert":
-            bg, dot, fg, text = RED_SOFT, RED, RED, "监控异常"
+            bg, dot, fg, text = RED_SOFT, RED, RED, tr("监控异常")
         elif self._state == "running":
-            bg, dot, fg, text = GREEN_SOFT, GREEN, GREEN, "监控运行中"
+            bg, dot, fg, text = GREEN_SOFT, GREEN, GREEN, tr("监控运行中")
         else:
-            bg, dot, fg, text = STOP_BG, MUTED, INK, "监控已停止"
+            bg, dot, fg, text = STOP_BG, MUTED, INK, tr("监控已停止")
         _round_fill(self, 0, 0, w, h, h / 2, bg)
         self.create_oval(12, 10, 20, 18, fill=dot)
         self.create_text(28, h / 2 + 1, text=text, anchor="w",
@@ -369,7 +370,7 @@ class StatCard(tk.Frame):
 
 
 # ------------------------------------------------------------------ 自检详情弹窗
-def _ok_text(ok, good: str, bad: str, unknown: str = "未采集") -> tuple[str, str]:
+def _ok_text(ok, good: str, bad: str, unknown: str = tr("未采集")) -> tuple[str, str]:
     """把三态探针结果转成 (文案, 颜色)：True 绿 / False 红 / None 灰。"""
     if ok is None:
         return unknown, FAINT
@@ -382,7 +383,7 @@ class SelfCheckDialog(tk.Toplevel):
     def __init__(self, master, status: str, label: str, reasons: list[str],
                  tick: dict, metrics: dict):
         super().__init__(master)
-        self.title("自检详情")
+        self.title(tr("自检详情"))
         self.configure(bg=BG)
         self.transient(master)
         self.resizable(True, True)
@@ -430,10 +431,10 @@ class SelfCheckDialog(tk.Toplevel):
         canvas = tk.Canvas(head, width=36, height=36, bg=CARD, highlightthickness=0)
         (icon_check if status == "ok" else icon_warn)(canvas, icon_color, 6, 6)
         canvas.grid(row=0, column=0, rowspan=2, padx=(16, 10), pady=(14, 10))
-        tk.Label(head, text=f"自检结果：{label}", font=_f(F_TITLE, True), fg=color,
+        tk.Label(head, text=tr("自检结果：{label}", label=label), font=_f(F_TITLE, True), fg=color,
                  bg=CARD, anchor="w").grid(row=0, column=1, sticky="w", pady=(14, 0))
-        tk.Label(head, text=f"{tick.get('iso') or '—'}  ·  本轮耗时 "
-                            f"{tick.get('elapsed_ms')} ms",
+        tk.Label(head, text=f"{tick.get('iso') or '—'}  ·  " + tr("本轮耗时 ")
+                            + f"{tick.get('elapsed_ms')} ms",
                  font=_f(F_SMALL), fg=MUTED, bg=CARD,
                  anchor="w").grid(row=1, column=1, sticky="w", pady=(4, 14))
 
@@ -455,43 +456,44 @@ class SelfCheckDialog(tk.Toplevel):
         self.bind("<Button-5>", lambda _e: canvas.yview_scroll(3, "units"))
 
         # 判定概览
-        sec = self._card(inner, "判定概览")
-        self._row(sec, "状态", label, color)
-        self._row(sec, "原因", "；".join(reasons) if reasons else "各项指标正常",
+        sec = self._card(inner, tr("判定概览"))
+        self._row(sec, tr("状态"), label, color)
+        sep = "; " if i18n.is_en() else "；"
+        self._row(sec, tr("原因"), sep.join(reasons) if reasons else tr("各项指标正常"),
                   AMBER_TEXT if reasons else GREEN)
-        self._row(sec, "采样时间", str(tick.get("iso") or "—"), mono=True)
-        self._row(sec, "耗时", f"{tick.get('elapsed_ms')} ms", mono=True)
+        self._row(sec, tr("采样时间"), str(tick.get("iso") or "—"), mono=True)
+        self._row(sec, tr("耗时"), f"{tick.get('elapsed_ms')} ms", mono=True)
 
         # 链路 / 网关
         iface_info = tick.get("iface_info") or {}
         gw = tick.get("gateway") or {}
         arp = gw.get("arp") or {}
-        sec = self._card(inner, "链路 / 网关")
-        self._row(sec, "活动接口", str(tick.get("iface") or "—"), mono=True)
+        sec = self._card(inner, tr("链路 / 网关"))
+        self._row(sec, tr("活动接口"), str(tick.get("iface") or "—"), mono=True)
         self._row(sec, "IPv4", "、".join(iface_info.get("ipv4") or []) or "—", mono=True)
-        self._row(sec, "默认网关", str(gw.get("host") or "—"), mono=True)
-        signals = "+".join(gw.get("signals") or []) or "无（判定不可达）"
-        self._row(sec, "存活信号", signals, GREEN if gw.get("alive") else RED)
-        self._row(sec, "ARP / MAC", str(arp.get("mac") or "无表项"), mono=True)
-        text, fg = _ok_text((gw.get("icmp") or {}).get("ok"), "有回显", "被屏蔽 / 无响应")
-        self._row(sec, "网关 ICMP", text, fg)
-        text, fg = _ok_text((gw.get("tcp") or {}).get("alive"), "有连接", "无连接")
-        self._row(sec, "网关 TCP", text, fg)
+        self._row(sec, tr("默认网关"), str(gw.get("host") or "—"), mono=True)
+        signals = "+".join(gw.get("signals") or []) or tr("无（判定不可达）")
+        self._row(sec, tr("存活信号"), signals, GREEN if gw.get("alive") else RED)
+        self._row(sec, "ARP / MAC", str(arp.get("mac") or tr("无表项")), mono=True)
+        text, fg = _ok_text((gw.get("icmp") or {}).get("ok"), tr("有回显"), tr("被屏蔽 / 无响应"))
+        self._row(sec, tr("网关 ICMP"), text, fg)
+        text, fg = _ok_text((gw.get("tcp") or {}).get("alive"), tr("有连接"), tr("无连接"))
+        self._row(sec, tr("网关 TCP"), text, fg)
 
         # 外网 ICMP / TCP
         targets = tick.get("icmp") or []
         tcp_targets = tick.get("tcp") or []
         if targets or tcp_targets:
-            sec = self._card(inner, f"外网探测（{len(targets)} ICMP / {len(tcp_targets)} TCP）")
+            sec = self._card(inner, tr("外网探测（{n} ICMP / {m} TCP）", n=len(targets), m=len(tcp_targets)))
             for t in targets:
-                name = str(t.get("name") or t.get("host") or "目标")
+                name = str(t.get("name") or t.get("host") or tr("目标"))
                 if not t.get("actor"):
-                    name += "（不参与判定）"
+                    name += tr("（不参与判定）")
                 if t.get("ok"):
-                    text = f"平均 {t.get('rtt_avg')} ms · 丢包 {t.get('loss_pct')}%"
+                    text = tr("平均 {rtt} ms · 丢包 {loss}%", rtt=t.get('rtt_avg'), loss=t.get('loss_pct'))
                     fg = GREEN
                 else:
-                    text = f"无响应 · 丢包 {t.get('loss_pct')}%"
+                    text = tr("无响应 · 丢包 {loss}%", loss=t.get('loss_pct'))
                     if t.get("error"):
                         text += f" · {t['error']}"
                     fg = RED
@@ -501,69 +503,69 @@ class SelfCheckDialog(tk.Toplevel):
                 if t.get("ok"):
                     text, fg = f"{t.get('ms')} ms", GREEN
                 else:
-                    text, fg = f"失败 · {t.get('error')}", RED
+                    text, fg = tr("失败 · {error}", error=t.get('error')), RED
                 self._row(sec, name, text, fg)
 
         # DNS：系统解析器 / 指定服务器 / 网卡自动下发
         dns_groups = (
-            ("系统 DNS", tick.get("dns") or []),
-            ("指定 DNS", tick.get("dns_ext") or []),
-            ("网卡 DNS", tick.get("dns_auto") or []),
+            (tr("系统 DNS"), tick.get("dns") or []),
+            (tr("指定 DNS"), tick.get("dns_ext") or []),
+            (tr("网卡 DNS"), tick.get("dns_auto") or []),
         )
         if any(group for _, group in dns_groups) or metrics.get("dns_note"):
-            sec = self._card(inner, "DNS 解析")
+            sec = self._card(inner, tr("DNS 解析"))
             for group_name, entries in dns_groups:
                 for d in entries:
                     if d.get("ok") is None:
-                        text, fg = f"未采集 · {d.get('error') or '不可用'}", FAINT
+                        text, fg = tr("未采集 · {error}", error=d.get('error') or tr('不可用')), FAINT
                     elif d.get("ok"):
-                        answers = "、".join(d.get("answers") or []) or "有应答"
+                        answers = "、".join(d.get("answers") or []) or tr("有应答")
                         text, fg = f"{answers} · {d.get('ms')} ms", GREEN
                     else:
-                        text, fg = f"失败 · {d.get('error') or '无应答'}", RED
+                        text, fg = tr("失败 · {error}", error=d.get('error') or tr('无应答')), RED
                     label_text = f"{group_name} @{d.get('server') or 'system'}"
                     self._row(sec, label_text, text, fg)
             if metrics.get("dns_note"):
-                self._row(sec, "提示", str(metrics["dns_note"]), AMBER_TEXT)
+                self._row(sec, tr("提示"), str(metrics["dns_note"]), AMBER_TEXT)
 
         # HTTP 可达性
         http = tick.get("http") or []
         if http:
-            sec = self._card(inner, f"HTTP 可达（{len(http)} 个目标）")
+            sec = self._card(inner, tr("HTTP 可达（{n} 个目标）", n=len(http)))
             for h in http:
-                url = _ellipsize_middle(str(h.get("url") or h.get("host") or "未知目标"), 40)
+                url = _ellipsize_middle(str(h.get("url") or h.get("host") or tr("未知目标")), 40)
                 if h.get("ok"):
                     text, fg = f"HTTP {h.get('status')} · {h.get('ms')} ms", GREEN
                 else:
-                    text, fg = f"失败 · {h.get('error') or '无响应'}", RED
+                    text, fg = tr("失败 · {error}", error=h.get('error') or tr('无响应')), RED
                 self._row(sec, url, text, fg)
 
         # 无线与接口计数
         wifi = tick.get("wifi") or {}
         counters = tick.get("counters") or {}
         if wifi or counters:
-            sec = self._card(inner, "无线 / 接口计数")
+            sec = self._card(inner, tr("无线 / 接口计数"))
             if wifi:
                 head_text = " ".join(str(wifi.get(k)) for k in
                                      ("band", "channel", "width", "phymode") if wifi.get(k))
                 if head_text:
-                    self._row(sec, "无线", head_text)
+                    self._row(sec, tr("无线"), head_text)
                 for label_text, key, unit in (
-                    ("信号强度", "rssi_dbm", "dBm"),
-                    ("噪声", "noise_dbm", "dBm"),
-                    ("信噪比", "snr_db", "dB"),
-                    ("发射速率", "tx_rate_mbps", "Mbps"),
+                    (tr("信号强度"), "rssi_dbm", "dBm"),
+                    (tr("噪声"), "noise_dbm", "dBm"),
+                    (tr("信噪比"), "snr_db", "dB"),
+                    (tr("发射速率"), "tx_rate_mbps", "Mbps"),
                 ):
                     if wifi.get(key) is not None:
                         self._row(sec, label_text, f"{wifi[key]} {unit}")
             if counters:
-                self._row(sec, "收包/错包", f"{counters.get('ipkts')} / {counters.get('ierrs')}")
-                self._row(sec, "发包/错包", f"{counters.get('opkts')} / {counters.get('oerrs')}")
+                self._row(sec, tr("收包/错包"), f"{counters.get('ipkts')} / {counters.get('ierrs')}")
+                self._row(sec, tr("发包/错包"), f"{counters.get('opkts')} / {counters.get('oerrs')}")
 
         # 底部关闭按钮
         foot = tk.Frame(self, bg=BG)
         foot.pack(fill="x", padx=16, pady=(0, 14))
-        ToolButton(foot, icon_check, "关闭", self.destroy, "primary").pack(side="right")
+        ToolButton(foot, icon_check, tr("关闭"), self.destroy, "primary").pack(side="right")
 
 
 # ------------------------------------------------------------------ 卸载
@@ -644,7 +646,7 @@ class UninstallDialog(tk.Toplevel):
 
     def __init__(self, master, home: Path, bundle: Path | None, on_confirm):
         super().__init__(master)
-        self.title("卸载 NetMon")
+        self.title(tr("卸载 NetMon"))
         self.configure(bg=BG)
         self.transient(master)
         self.resizable(False, False)
@@ -670,48 +672,48 @@ class UninstallDialog(tk.Toplevel):
         ic.pack(side="left", padx=(16, 8), pady=14)
         txt = tk.Frame(head, bg=RED_SOFT)
         txt.pack(side="left", pady=12)
-        tk.Label(txt, text="卸载 NetMon", font=_f(F_BODY, True), fg=RED_DARK,
+        tk.Label(txt, text=tr("卸载 NetMon"), font=_f(F_BODY, True), fg=RED_DARK,
                  bg=RED_SOFT, anchor="w").pack(anchor="w")
-        tk.Label(txt, text="勾选项会被移入废纸篓，可以随时拖回来；不会直接抹掉。",
+        tk.Label(txt, text=tr("勾选项会被移入废纸篓，可以随时拖回来；不会直接抹掉。"),
                  font=_f(F_SMALL), fg=AMBER_TEXT, bg=RED_SOFT,
                  anchor="w").pack(anchor="w", pady=(3, 0))
 
         card = tk.Frame(self, bg=CARD, highlightthickness=1, highlightbackground=LINE)
         card.pack(fill="x", padx=16)
         self.row_service = CheckRow(
-            card, "停止并移除后台服务",
-            f"{launchd.PLIST}（必选，否则它会在每次登录时尝试拉起已删除的应用）",
+            card, tr("停止并移除后台服务"),
+            tr("{path}（必选，否则它会在每次登录时尝试拉起已删除的应用）", path=launchd.PLIST),
             value=True, locked=True)
         self.row_service.pack(fill="x", padx=16, pady=(14, 10))
         self.row_data = CheckRow(
-            card, "删除采样数据与报告",
+            card, tr("删除采样数据与报告"),
             f"{self._home}", value=False, accent=RED)
         self.row_data.pack(fill="x", padx=16, pady=(0, 10))
         if self._bundle:
             self.row_app = CheckRow(
-                card, "删除应用本体",
+                card, tr("删除应用本体"),
                 f"{self._bundle}", value=False, accent=RED)
             self.row_app.pack(fill="x", padx=16, pady=(0, 14))
         else:
             self.row_app = None
-            tk.Label(card, text="当前是以源码方式运行，不涉及删除应用本体。",
+            tk.Label(card, text=tr("当前是以源码方式运行，不涉及删除应用本体。"),
                      font=_f(F_SMALL), fg=FAINT, bg=CARD, anchor="w").pack(
                 fill="x", padx=16, pady=(0, 14))
 
         foot = tk.Frame(self, bg=BG)
         foot.pack(fill="x", padx=16, pady=(12, 14))
-        ToolButton(foot, icon_check, "卸载", self._confirm, "danger").pack(side="right")
-        ToolButton(foot, icon_stop, "取消", self.destroy).pack(side="right", padx=(0, 10))
+        ToolButton(foot, icon_check, tr("卸载"), self._confirm, "danger").pack(side="right")
+        ToolButton(foot, icon_stop, tr("取消"), self.destroy).pack(side="right", padx=(0, 10))
 
     def _confirm(self):
         data = self.row_data.get()
         app = bool(self.row_app and self.row_app.get())
         if (data or app) and not messagebox.askyesno(
-                "确认卸载",
-                "将把所选内容移入废纸篓：\n\n"
-                + ("· 全部采样数据与报告\n" if data else "")
-                + ("· NetMon 应用本体\n" if app else "")
-                + "\n文件仍可从废纸篓恢复。确定继续吗？",
+                tr("确认卸载"),
+                tr("将把所选内容移入废纸篓：\n\n")
+                + (tr("· 全部采样数据与报告\n") if data else "")
+                + (tr("· NetMon 应用本体\n") if app else "")
+                + tr("\n文件仍可从废纸篓恢复。确定继续吗？"),
                 parent=self):
             return
         self.destroy()
@@ -722,7 +724,7 @@ class UninstallDialog(tk.Toplevel):
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"网哨 NetMon  ·  {__version__}")
+        self.root.title(tr("网哨 NetMon") + f"  ·  {__version__}")
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
         self.root.minsize(MIN_W, MIN_H)
@@ -776,9 +778,9 @@ class App:
         logo.pack(side="left", padx=(22, 8), pady=12)
         title_box = tk.Frame(header, bg=CARD)
         title_box.pack(side="left", pady=12)
-        tk.Label(title_box, text="网哨 NetMon", font=_f(F_TITLE, True), fg=INK,
+        tk.Label(title_box, text=tr("网哨 NetMon"), font=_f(F_TITLE, True), fg=INK,
                  bg=CARD).pack(anchor="w")
-        tk.Label(title_box, text="网络断连监控与自动归因", font=_f(F_BODY), fg=MUTED,
+        tk.Label(title_box, text=tr("网络断连监控与自动归因"), font=_f(F_BODY), fg=MUTED,
                  bg=CARD).pack(anchor="w")
         self._status_pill = StatusPill(header)
         self._status_pill.pack(side="right", padx=(0, 22), pady=14)
@@ -806,24 +808,24 @@ class App:
 
         self._info_labels = {}
         info_row_h = 0  # 统一值行的网格行号
-        col = info_col(0, "进程 PID")
+        col = info_col(0, tr("进程 PID"))
         self._info_labels["pid"] = tk.Label(col, text="—", font=_f(F_BODY, True),
                                              fg=INK, bg=CARD, anchor="w")
         self._info_labels["pid"].grid(row=info_row_h + 1, column=0, sticky="w", pady=(4, 0))
         tk.Frame(info, bg=LINE, width=1).grid(row=0, column=0, sticky="e")
-        col = info_col(1, "采样间隔")
+        col = info_col(1, tr("采样间隔"))
         self._info_labels["interval"] = tk.Label(col, text="—", font=_f(F_BODY, True),
                                                    fg=INK, bg=CARD, anchor="w")
         self._info_labels["interval"].grid(row=info_row_h + 1, column=0, sticky="w", pady=(4, 0))
         tk.Frame(info, bg=LINE, width=1).grid(row=0, column=1, sticky="e")
-        col = info_col(2, "数据目录")
+        col = info_col(2, tr("数据目录"))
         home_row = tk.Frame(col, bg=CARD)
         home_row.grid(row=info_row_h + 1, column=0, sticky="w", pady=(4, 0))
         self._info_labels["home"] = tk.Label(home_row, text="—", font=_f(F_BODY, True),
                                               fg=INK, bg=CARD, anchor="w")
         self._info_labels["home"].pack(side="left")
         ToolTip(self._info_labels["home"], lambda: self._home_full)
-        open_dir = tk.Label(home_row, text="打开", font=_f(F_SMALL), fg=BLUE,
+        open_dir = tk.Label(home_row, text=tr("打开"), font=_f(F_SMALL), fg=BLUE,
                             bg=CARD, cursor="hand2")
         open_dir.pack(side="left", padx=(10, 0))
         open_dir.bind("<Button-1>", lambda _e: self._open_data_dir())
@@ -839,18 +841,18 @@ class App:
         self._banner_text = tk.Label(self._banner, text="", font=_f(F_BODY),
                                      fg=AMBER_TEXT, bg=AMBER_SOFT, anchor="w")
         self._banner_text.pack(side="left", pady=8)
-        self._banner_strong = tk.Label(self._banner, text="今日暂无采样",
+        self._banner_strong = tk.Label(self._banner, text=tr("今日暂无采样"),
                                        font=_f(F_BODY, True), fg=AMBER,
                                        bg=AMBER_SOFT, anchor="w")
         self._banner_strong.pack(side="left", pady=8)
-        self._banner_tail = tk.Label(self._banner, text="，非实时", font=_f(F_BODY),
+        self._banner_tail = tk.Label(self._banner, text=tr("，非实时"), font=_f(F_BODY),
                                      fg=AMBER_TEXT, bg=AMBER_SOFT, anchor="w")
         self._banner_tail.pack(side="left", pady=8)
 
         # 数据日期窗口说明
         meta = tk.Frame(body, bg=BG)
         meta.grid(row=2, column=0, sticky="ew", pady=(12, 6))
-        self._data_meta = tk.Label(meta, text="正在读取数据…", font=_f(F_SMALL),
+        self._data_meta = tk.Label(meta, text=tr("正在读取数据…"), font=_f(F_SMALL),
                                    fg=MUTED, bg=BG, anchor="w")
         self._data_meta.pack(side="left")
 
@@ -859,9 +861,9 @@ class App:
         stats.grid(row=3, column=0, sticky="ew")
         for c in range(3):
             stats.grid_columnconfigure(c, weight=1, uniform="card")
-        self.card_ticks = StatCard(stats, "采样点")
-        self.card_uptime = StatCard(stats, "硬断网可用率")
-        self.card_events = StatCard(stats, "异常事件")
+        self.card_ticks = StatCard(stats, tr("采样点"))
+        self.card_uptime = StatCard(stats, tr("硬断网可用率"))
+        self.card_events = StatCard(stats, tr("异常事件"))
         self.card_ticks.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
         self.card_uptime.grid(row=0, column=1, sticky="nsew", padx=7)
         self.card_events.grid(row=0, column=2, sticky="nsew", padx=(7, 0))
@@ -880,12 +882,12 @@ class App:
             tk.Frame(actions, bg=LINE_DARK, width=1).grid(
                 row=0, column=col, sticky="ns", pady=12, padx=4)
 
-        self.btn_start = ToolButton(actions, icon_play, "启动监控", self.on_start, "primary")
-        self.btn_stop = ToolButton(actions, icon_stop, "停止监控", self.on_stop, "danger")
-        self.btn_report = ToolButton(actions, icon_report, "生成报告", self.on_report)
-        self.btn_open = ToolButton(actions, icon_folder, "报告文件夹", self.on_open_report)
-        self.btn_check = ToolButton(actions, icon_pulse, "立即自检", self.on_check)
-        self.btn_clear = ToolButton(actions, icon_trash, "清除数据", self.on_clear, "warn")
+        self.btn_start = ToolButton(actions, icon_play, tr("启动监控"), self.on_start, "primary")
+        self.btn_stop = ToolButton(actions, icon_stop, tr("停止监控"), self.on_stop, "danger")
+        self.btn_report = ToolButton(actions, icon_report, tr("生成报告"), self.on_report)
+        self.btn_open = ToolButton(actions, icon_folder, tr("报告文件夹"), self.on_open_report)
+        self.btn_check = ToolButton(actions, icon_pulse, tr("立即自检"), self.on_check)
+        self.btn_clear = ToolButton(actions, icon_trash, tr("清除数据"), self.on_clear, "warn")
         # 组内相邻按钮之间留 BTN_GAP；sep 列自身带 padx，组边也有间距
         self.btn_start.grid(row=0, column=0, sticky="nsew", padx=(0, BTN_GAP / 2))
         self.btn_stop.grid(row=0, column=1, sticky="nsew", padx=(BTN_GAP / 2, 0))
@@ -900,7 +902,7 @@ class App:
         # 最近事件表头
         log_head = tk.Frame(body, bg=BG)
         log_head.grid(row=5, column=0, sticky="ew", pady=(18, 6))
-        tk.Label(log_head, text="最近事件", font=_f(F_BODY, True), fg=INK,
+        tk.Label(log_head, text=tr("最近事件"), font=_f(F_BODY, True), fg=INK,
                  bg=BG).pack(side="left")
         self._log_hint = tk.Label(log_head, text="", font=_f(F_SMALL), fg=BLUE, bg=BG)
         self._log_hint.pack(side="right")
@@ -930,25 +932,25 @@ class App:
         self._rows.grid_columnconfigure(2, minsize=96, weight=0)
         self._rows.grid_columnconfigure(3, weight=1, minsize=120)
         self._header = {}
-        for col, text in enumerate(("时间", "类型", "时长", "原因")):
+        for col, text in enumerate((tr("时间"), tr("类型"), tr("时长"), tr("原因"))):
             h = tk.Label(self._rows, text=text, font=_f(F_SMALL, True), fg=MUTED,
                          bg=CARD, anchor="w")
             h.grid(row=0, column=col, sticky="ew", padx=(14, 6), pady=(10, 4))
             self._header[col] = h
         # 空状态：覆盖在表格区域中央，水平垂直居中、浅灰
-        self._empty_lbl = tk.Label(self._rows_canvas, text="暂无异常事件",
+        self._empty_lbl = tk.Label(self._rows_canvas, text=tr("暂无异常事件"),
                                    font=_f(F_BODY), fg=FAINT, bg=CARD)
         self._empty_win = None
 
         # 底栏
         foot = tk.Frame(self.root, bg=BG)
         foot.pack(fill="x", padx=22, pady=(0, 12))
-        cfg_lbl = tk.Label(foot, text=f"配置  {_ellipsize_middle(str(CONFIG_PATH))}",
+        cfg_lbl = tk.Label(foot, text=tr("配置") + f"  {_ellipsize_middle(str(CONFIG_PATH))}",
                            font=_f(F_SMALL), fg=FAINT, bg=BG)
         cfg_lbl.pack(side="left")
         ToolTip(cfg_lbl, lambda: str(CONFIG_PATH))
         # 卸载入口放底栏右侧：低频操作，不占按钮区的视觉重量
-        self._uninstall_lbl = tk.Label(foot, text="卸载 NetMon…", font=_f(F_SMALL),
+        self._uninstall_lbl = tk.Label(foot, text=tr("卸载 NetMon…"), font=_f(F_SMALL),
                                        fg=FAINT, bg=BG, cursor="hand2")
         self._uninstall_lbl.pack(side="right")
         self._uninstall_lbl.bind("<Button-1>", lambda _e: self.on_uninstall())
@@ -1005,10 +1007,10 @@ class App:
         st = launchd.status()
         pid = store.is_running()
         if st["loaded"]:
-            return True, str(st["pid"] or "—"), "launchd 常驻服务"
+            return True, str(st["pid"] or "—"), tr("launchd 常驻服务")
         if pid:
-            return True, str(pid), "前台采集进程"
-        return False, "—", "未运行"
+            return True, str(pid), tr("前台采集进程")
+        return False, "—", tr("未运行")
 
     # ------------------------------------------------------------------ 后台快照
     def _snapshot(self) -> dict:
@@ -1019,7 +1021,7 @@ class App:
             "running": running,
             "pid": pid,
             "service": service,
-            "interval": f"{cfg.get('interval_seconds', 30)} 秒",
+            "interval": tr("{n} 秒", n=cfg.get('interval_seconds', 30)),
             "home": str(DATA_DIR),
             "data": None,
         }
@@ -1105,9 +1107,9 @@ class App:
             for card in (self.card_ticks, self.card_uptime, self.card_events):
                 card.set("—", FAINT)
             if data:
-                self._data_meta.configure(text=f"数据日期 {data['day']} · 无有效采样")
+                self._data_meta.configure(text=tr("数据日期 {day} · 无有效采样", day=data['day']))
             else:
-                self._data_meta.configure(text="暂无采集数据 · 启动监控后开始记录")
+                self._data_meta.configure(text=tr("暂无采集数据 · 启动监控后开始记录"))
             self._set_banner(data.get("day") if data else None,
                              bool(data and data.get("seeded")))
             self._render_events([], has_data=False)
@@ -1117,33 +1119,33 @@ class App:
         day = data["day"]
         start_hm = util.hhmm(s["start_ts"])
         end_hm = util.hhmm(s["end_ts"])
-        self._data_meta.configure(text=f"数据日期 {day} · {start_hm}–{end_hm}")
+        self._data_meta.configure(text=tr("数据日期 {day} · {start}–{end}", day=day, start=start_hm, end=end_hm))
         self._set_banner(day, bool(data["seeded"]))
 
         coverage = s.get("coverage_pct", 100)
         # 主界面不展示覆盖率：采样连续性是排障/报告关心的指标，放在仪表盘上
         # 容易与旁边「可用率」混淆（用户会把 60% 误读成网络质量）。报告里仍完整呈现。
         self.card_ticks.set(str(s["tick_count"]), BLUE,
-                            [(f"采集窗口 {start_hm}–{end_hm}", MUTED)])
+                            [(tr("采集窗口 {start}–{end}", start=start_hm, end=end_hm), MUTED)])
 
         hard = s.get("sample_hard_uptime_pct", s["hard_uptime_pct"])
         tick_count = s["tick_count"]
         if tick_count < MIN_SAMPLES or coverage < 80:
             # 样本不足：数字用中性深灰，附一行灰字提示，不做达标着色
             hard_color = INK
-            subnote = "样本不足，仅供参考"
+            subnote = tr("样本不足，仅供参考")
         else:
             ok = hard >= UPTIME_TARGET
             hard_color = GREEN if ok else AMBER
             subnote = None
         self.card_uptime.set(f"{hard}%", hard_color,
-                             [(f"目标 ≥ {UPTIME_TARGET}%", hard_color)],
+                             [(tr("目标 ≥ {target}%", target=UPTIME_TARGET), hard_color)],
                              subnote=subnote)
 
         quality = s["incident_count"] - s["hard_incident_count"]
         hard_n = s["hard_incident_count"]
-        note_parts = [("硬断网 ", MUTED), (str(hard_n), RED),
-                      ("   ·   质量异常 ", MUTED), (str(quality), AMBER)]
+        note_parts = [(tr("硬断网 "), MUTED), (str(hard_n), RED),
+                      (tr("   ·   质量异常 "), MUTED), (str(quality), AMBER)]
         self.card_events.set(str(s["incident_count"]), INK, note_parts)
 
         self._render_events(data["recent"], has_data=True)
@@ -1162,7 +1164,7 @@ class App:
         """历史/示例数据（今日无采样）时显示浅橙提示条，实时数据隐藏。"""
         stale = bool(day and day != util.day_str(util.now_ts()))
         if day and (stale or seeded):
-            self._banner_text.configure(text=f"当前显示的是历史数据（日期 {day}），")
+            self._banner_text.configure(text=tr("当前显示的是历史数据（日期 {day}），", day=day))
             self._banner.grid()
         else:
             self._banner.grid_remove()
@@ -1174,9 +1176,9 @@ class App:
                 w.destroy()
         empty_msg = None
         if not has_data:
-            empty_msg = "暂无数据，启动监控后事件会显示在这里。"
+            empty_msg = tr("暂无数据，启动监控后事件会显示在这里。")
         elif not recent:
-            empty_msg = "暂无异常事件"
+            empty_msg = tr("暂无异常事件")
         if empty_msg:
             # 空状态：隐藏表头，居中显示浅灰提示
             for h in self._header.values():
@@ -1190,9 +1192,9 @@ class App:
         self._show_empty(None)
         for r, inc in enumerate(recent, start=1):
             hard = inc["class"] in HARD_CLASSES
-            kind = "硬断网" if hard else "质量异常"
+            kind = tr("硬断网") if hard else tr("质量异常")
             kind_color = RED if hard else AMBER
-            reason = next((x for x in inc["reasons"] if x), "")
+            reason = tr(next((x for x in inc["reasons"] if x), ""))
             cells = [
                 (f"{inc['day'][5:]} {inc['start_hhmm']}", BODY, F_SMALL),
                 (f"● {kind}", kind_color, F_BODY),
@@ -1234,7 +1236,7 @@ class App:
 
     def _run_async(self, fn, hint: str):
         if self._busy:
-            messagebox.showinfo("请稍候", "上一个操作还在进行中。")
+            messagebox.showinfo(tr("请稍候"), tr("上一个操作还在进行中。"))
             return
         self._busy = True
         self._log_hint.configure(text=hint)
@@ -1269,7 +1271,7 @@ class App:
                 self._busy = False
                 self._log_hint.configure(text="")
                 if kind == "action_error":
-                    messagebox.showerror("操作失败", str(payload))
+                    messagebox.showerror(tr("操作失败"), str(payload))
                 else:
                     self._on_result(payload)
                 self._apply_button_states()
@@ -1301,12 +1303,12 @@ class App:
         elif kind == "check":
             SelfCheckDialog(self.root, **msg)
         elif kind == "report":
-            if messagebox.askyesno("报告已生成", f"{msg}\n\n现在打开报告吗？"):
+            if messagebox.askyesno(tr("报告已生成"), f"{msg}\n\n" + tr("现在打开报告吗？")):
                 threading.Thread(target=lambda: subprocess.run(["open", msg]),
                                  daemon=True).start()
         elif kind == "uninstall":
             text, exiting = msg
-            messagebox.showinfo("卸载完成", text)
+            messagebox.showinfo(tr("卸载完成"), text)
             if exiting:
                 self.root.destroy()
 
@@ -1334,9 +1336,9 @@ class App:
         if not payload.get("changed"):
             return
         if payload.get("reloaded"):
-            self._flash("应用位置已变更，后台服务路径已自动修复，监控继续运行。", GREEN, 9000)
+            self._flash(tr("应用位置已变更，后台服务路径已自动修复，监控继续运行。"), GREEN, 9000)
         else:
-            self._flash("应用位置已变更，后台服务路径已自动修复，下次启动监控时生效。", AMBER, 9000)
+            self._flash(tr("应用位置已变更，后台服务路径已自动修复，下次启动监控时生效。"), AMBER, 9000)
         self._refresh_async()
 
     # ------------------------------------------------------------------ 操作
@@ -1344,15 +1346,15 @@ class App:
         def task():
             st = launchd.status()
             if st["loaded"] or not store.run_lock_available():
-                return ("info", "监控已在运行，无需重复启动。")
+                return ("info", tr("监控已在运行，无需重复启动。"))
             cfg = load_config()
             interval = int(cfg.get("interval_seconds", 30))
             res = launchd.install(interval, DATA_DIR)
             if not res["ok"]:
-                raise RuntimeError(res["stderr"] or res["stdout"] or "未知错误")
-            return ("info", f"监控已启动，采样间隔 {interval} 秒。\n"
-                            "后台服务常驻运行，关闭本窗口不会中断监控。")
-        self._run_async(task, "正在启动监控…")
+                raise RuntimeError(res["stderr"] or res["stdout"] or tr("未知错误"))
+            return ("info", tr("监控已启动，采样间隔 {interval} 秒。\n", interval=interval)
+                            + tr("后台服务常驻运行，关闭本窗口不会中断监控。"))
+        self._run_async(task, tr("正在启动监控…"))
 
     def on_stop(self):
         def task():
@@ -1363,66 +1365,68 @@ class App:
                 time.sleep(0.1)
             pid = store.is_running()
             if pid:
-                return ("warn", f"后台服务已卸载，但检测到前台采集进程（PID {pid}）仍在运行。\n"
-                                "请在启动它的终端按 Ctrl-C 停止。")
-            return ("info", "监控已停止，后台服务已卸载。")
-        self._run_async(task, "正在停止监控…")
+                return ("warn", tr("后台服务已卸载，但检测到前台采集进程（PID {pid}）仍在运行。\n", pid=pid)
+                                + tr("请在启动它的终端按 Ctrl-C 停止。"))
+            return ("info", tr("监控已停止，后台服务已卸载。"))
+        self._run_async(task, tr("正在停止监控…"))
 
     def on_report(self):
         def task():
             cfg = load_config()
             days = store.available_days()
             if not days:
-                return ("warn", "还没有采集数据。请先启动监控并运行一段时间。")
+                return ("warn", tr("还没有采集数据。请先启动监控并运行一段时间。"))
             # 与仪表盘口径一致：桌面按钮只生成「最新采集日」的报告。
             # 历史数据按天独立成文件；跨天汇总请用命令行 report --days N。
             day = days[-1]
             ticks = store.load_ticks([day])
             if not ticks:
-                return ("warn", f"{day} 没有有效采样点，无法生成报告。")
+                return ("warn", tr("{day} 没有有效采样点，无法生成报告。", day=day))
             evidence = store.load_evidence([day])
             incidents = analyze.build_incidents(ticks, cfg)
             store.attach_evidence(incidents, evidence)
             env = probe.env_snapshot(cfg)
             paths = report.write(cfg, ticks, incidents, evidence, env)
             return ("report", str(paths[0]))
-        self._run_async(task, "正在生成报告…")
+        self._run_async(task, tr("正在生成报告…"))
 
     def on_open_report(self):
         def task():
             # 空目录时打开 Finder 会让人以为按钮坏了，直接给一行内联提示。
             reports = sorted(REPORT_DIR.glob("*.html")) if REPORT_DIR.exists() else []
             if not reports:
-                return ("warn", "还没有报告。请先启动监控，再点「生成报告」。")
+                return ("warn", tr("还没有报告。请先启动监控，再点「生成报告」。"))
             # 按天生成后会有多份报告，直接打开目录让用户自己选。
             # 不弹确认框：Finder 窗口可见即是反馈，模态框会抢焦点并导致目录窗口被盖住/误以为关闭。
             util.ensure_dir(REPORT_DIR)
             subprocess.Popen(["open", str(REPORT_DIR)])
             return ("quiet", "")
-        self._run_async(task, "正在打开报告文件夹…")
+        self._run_async(task, tr("正在打开报告文件夹…"))
 
     def on_clear(self):
         # 监控运行时禁止清除，避免边归档边写入产生不一致数据。
         if self._running or store.is_running() or launchd.status()["loaded"]:
             messagebox.showwarning(
-                "无法清除", "监控正在运行，请先点「停止监控」再清除历史数据。")
+                tr("无法清除"), tr("监控正在运行，请先点「停止监控」再清除历史数据。"))
             return
         days = store.available_days()
         reports = sorted(REPORT_DIR.glob("*.html")) if REPORT_DIR.exists() else []
         if not days and not reports:
-            messagebox.showinfo("无需清除", "当前没有历史数据或报告。")
+            messagebox.showinfo(tr("无需清除"), tr("当前没有历史数据或报告。"))
             return
-        detail = (f"将归档 {len(days)} 天采样/取证数据、{len(reports)} 份报告。\n\n"
-                  "文件会被移入 NetMon 数据目录下的时间戳备份文件夹，可随时找回；\n"
-                  "不会真正删除，日志也会保留。\n\n确定继续吗？")
-        if not messagebox.askyesno("清除历史数据", detail):
+        detail = (tr("将归档 {days} 天采样/取证数据、{reports} 份报告。\n\n",
+                    days=len(days), reports=len(reports))
+                  + tr("文件会被移入 NetMon 数据目录下的时间戳备份文件夹，可随时找回；\n")
+                  + tr("不会真正删除，日志也会保留。\n\n确定继续吗？"))
+        if not messagebox.askyesno(tr("清除历史数据"), detail):
             return
 
         def task():
             backup, n_data, n_report = store.archive_all()
-            return ("info", f"已归档 {n_data} 个数据文件、{n_report} 份报告。\n"
-                            f"备份位置：{backup}")
-        self._run_async(task, "正在清除历史数据…")
+            return ("info", tr("已归档 {data} 个数据文件、{reports} 份报告。\n",
+                              data=n_data, reports=n_report)
+                            + tr("备份位置：{path}", path=backup))
+        self._run_async(task, tr("正在清除历史数据…"))
 
     def on_uninstall(self):
         UninstallDialog(self.root, Path(self._home_full), _app_bundle(), self._do_uninstall)
@@ -1431,45 +1435,46 @@ class App:
         def task():
             notes = []
             res = launchd.uninstall()
-            notes.append("后台服务已停止并移除" if res["removed"] else "后台服务未注册，无需移除")
+            notes.append(tr("后台服务已停止并移除") if res["removed"] else tr("后台服务未注册，无需移除"))
 
             if remove_data:
                 home = Path(self._home_full)
                 if home.exists():
                     try:
                         dest = util.move_to_trash(home)
-                        notes.append(f"数据与报告已移入废纸篓：{dest}")
+                        notes.append(tr("数据与报告已移入废纸篓：{dest}", dest=dest))
                     except OSError as exc:
-                        notes.append(f"数据移动失败：{exc}")
+                        notes.append(tr("数据移动失败：{exc}", exc=exc))
                 else:
-                    notes.append("数据目录不存在，已跳过")
+                    notes.append(tr("数据目录不存在，已跳过"))
 
             if remove_app and _app_bundle():
                 # 运行中的包被移走会让后续 import 找不到文件，交给退出后的守护脚本处理
                 _trash_app_after_exit(_app_bundle())
-                notes.append("应用本体将在退出后移入废纸篓")
+                notes.append(tr("应用本体将在退出后移入废纸篓"))
             return ("uninstall", ("\n".join(notes), bool(remove_app)))
-        self._run_async(task, "正在卸载…")
+        self._run_async(task, tr("正在卸载…"))
 
     def on_check(self):
         def task():
             cfg = load_config()
             tick = probe.collect(cfg, 0)
             status, reasons, metrics = analyze.classify(tick, cfg)
-            label = analyze.STATUS_LABEL.get(status, status)
-            # 详情交给自检弹窗渲染；采集与判定逻辑保持不变。
+            label = tr(analyze.STATUS_LABEL.get(status, status))
+            # 详情交给自检弹窗渲染；采集与判定逻辑保持不变。仅翻译展示文案。
+            reasons = [tr(r) for r in reasons]
             return ("check", {
                 "status": status, "label": label, "reasons": reasons,
                 "tick": tick, "metrics": metrics,
             })
-        self._run_async(task, "正在采集自检数据…")
+        self._run_async(task, tr("正在采集自检数据…"))
 
     def on_close(self):
         if self._running and messagebox.askyesno(
-                "退出网哨",
-                "监控正在后台运行。\n\n"
-                "「是」— 同时停止监控并退出\n"
-                "「否」— 仅关闭窗口，监控继续在后台运行"):
+                tr("退出网哨"),
+                tr("监控正在后台运行。\n\n") +
+                tr("「是」— 同时停止监控并退出\n") +
+                tr("「否」— 仅关闭窗口，监控继续在后台运行")):
             def stop_then_exit():
                 try:
                     launchd.uninstall()
@@ -1483,7 +1488,7 @@ class App:
 
 def main() -> int:
     if sys.version_info < (3, 9):
-        print("需要 Python 3.9+", file=sys.stderr)
+        print(tr("需要 Python 3.9+"), file=sys.stderr)
         return 2
     root = tk.Tk()
     App(root)

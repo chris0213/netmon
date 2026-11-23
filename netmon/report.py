@@ -13,8 +13,9 @@ import re
 from collections import Counter, defaultdict
 from urllib.parse import urlsplit
 
-from . import analyze, util
+from . import analyze, i18n, util
 from .config import REPORT_DIR
+from .i18n import t as tr
 
 E = html.escape
 
@@ -133,7 +134,7 @@ def _http_host(item: dict) -> str:
     """
     url = item.get("url")
     if not isinstance(url, str) or not url:
-        return item.get("host") or "未知目标"
+        return item.get("host") or tr("未知目标")
     try:
         host = urlsplit(url).hostname
     except ValueError:
@@ -142,7 +143,7 @@ def _http_host(item: dict) -> str:
         return host
     # urlsplit 拿不到主机名时，退回按 '/' 切分（兼容无协议写法）
     parts = url.split("/")
-    return parts[2] if len(parts) > 2 and parts[2] else (parts[0] or "未知目标")
+    return parts[2] if len(parts) > 2 and parts[2] else (parts[0] or tr("未知目标"))
 
 
 def _rel(path) -> str:
@@ -260,7 +261,7 @@ def line_chart(
 ) -> str:
     vals = [v for s in series for _, v in s["points"] if v is not None]
     if not vals:
-        return '<p class="sub" style="padding:12px 0">该时段无有效数据。</p>'
+        return tr('<p class="sub" style="padding:12px 0">该时段无有效数据。</p>')
     y_min = min(vals)
     y_max = max(vals)
     if refline is not None:
@@ -418,20 +419,38 @@ def ribbon(ticks: list[dict], cfg: dict) -> str:
             x = left + hh * (cw + gap)
             cnt = grid[day].get(hh)
             if not cnt:
-                fill, tip = "#f2f4f7", f"{day} {hh:02d}:00 无数据"
+                fill, tip = "#f2f4f7", tr("{day} {hh}:00 无数据", day=day, hh=f"{hh:02d}")
             else:
                 worst = max(cnt, key=lambda s: order.get(s, 0))
                 total = sum(cnt.values())
                 bad = total - cnt.get("ok", 0)
                 fill = analyze.STATUS_COLOR.get(worst, "#16a34a")
-                detail = "，".join(f"{analyze.STATUS_LABEL.get(k, k)} {v}" for k, v in cnt.most_common())
-                tip = f"{day} {hh:02d}:00 采样 {total} 次，异常 {bad} 次（{detail}）"
+                sep = ", " if i18n.is_en() else "，"
+                detail = sep.join(f"{tr(analyze.STATUS_LABEL.get(k, k))} {v}" for k, v in cnt.most_common())
+                tip = tr("{day} {hh}:00 采样 {total} 次，异常 {bad} 次（{detail}）",
+                        day=day, hh=f"{hh:02d}", total=total, bad=bad, detail=detail)
             out.append(
                 f'<rect x="{x}" y="{y}" width="{cw}" height="{ch}" rx="2.5" fill="{fill}">'
                 f'<title>{_esc(tip)}</title></rect>'
             )
     out.append("</svg>")
     return "".join(out)
+
+
+def _localize_probe_key(key: str) -> str:
+    """探针统计 key 仅用于聚合（保持中文原样），这里只在渲染时翻译前缀。"""
+    if not i18n.is_en():
+        return key
+    replacements = (
+        ("DNS 系统解析器", "DNS system resolver"),
+        ("DNS 直连 ", "DNS direct "),
+        ("DNS 网卡下发 ", "DNS interface "),
+        ("网关 ", "Gateway "),
+    )
+    for old, new in replacements:
+        if key.startswith(old):
+            return new + key[len(old):]
+    return key
 
 
 def bar_row(label: str, ok: int, total: int, width: int = 1080) -> str:
@@ -465,18 +484,18 @@ def _grade(summary: dict) -> tuple[str, str]:
     """综合评级：采样覆盖不足时先降级为「样本不足」，避免稀疏采样误判为健康。"""
     coverage = summary.get("coverage_pct", 100)
     if summary.get("tick_count", 0) < 10 or coverage < 80:
-        return "样本不足", "#d97706"
+        return tr("样本不足"), "#d97706"
     up = summary.get("sample_uptime_pct", summary.get("uptime_pct", 0))
     hard = summary.get("hard_incident_count") or 0
     hard_up = summary.get("sample_hard_uptime_pct", summary.get("hard_uptime_pct"))
     hard_up = 100 if hard_up is None else hard_up
     if up >= 99.9 and hard == 0:
-        return "优", "#16a34a"
+        return tr("优"), "#16a34a"
     if up >= 99 and hard_up >= 99.5:
-        return "良", "#65a30d"
+        return tr("良"), "#65a30d"
     if up >= 98:
-        return "中", "#d97706"
-    return "差", "#dc2626"
+        return tr("中"), "#d97706"
+    return tr("差"), "#dc2626"
 
 
 def _layer_row(label: str, bad: int, total: int, width: int = 1080) -> str:
@@ -489,7 +508,7 @@ def _layer_row(label: str, bad: int, total: int, width: int = 1080) -> str:
     else:
         color = "#dc2626"
     bw = int(rate / 100 * (width - 340))
-    note = "无异常" if bad == 0 else f"异常 {bad} 次"
+    note = tr("无异常") if bad == 0 else tr("异常 {bad} 次", bad=bad)
     return (
         f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">'
         f'<div style="width:150px;font-size:12.5px;color:#475467">{_esc(label)}</div>'
@@ -513,13 +532,13 @@ def _layer_bars(ticks: list[dict], cfg: dict) -> str:
     for st in analyze.STATUS_ORDER:
         if st == "ok":
             continue
-        rows.append(_layer_row(analyze.STATUS_LABEL.get(st, st), cnt.get(st, 0), total))
+        rows.append(_layer_row(tr(analyze.STATUS_LABEL.get(st, st)), cnt.get(st, 0), total))
     return "".join(rows)
 
 
 def _status_tag(status: str) -> str:
     c = analyze.STATUS_COLOR.get(status, "#98a2b3")
-    lbl = analyze.STATUS_LABEL.get(status, status)
+    lbl = tr(analyze.STATUS_LABEL.get(status, status))
     return (f'<span class="tag" style="color:{c};background:{c}14;border-color:{c}40">{_esc(lbl)}</span>')
 
 
@@ -567,7 +586,8 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     gap_threshold = max(interval * 2, 90)
     all_ts = sorted(t["ts"] for t in ticks)
     gaps = [(a, b) for a, b in zip(all_ts, all_ts[1:]) if b - a > gap_threshold]
-    gap_text = "；".join(f"{util.iso(a)} → {util.iso(b)}" for a, b in gaps[:3]) or "无"
+    gap_sep = "; " if i18n.is_en() else "；"
+    gap_text = gap_sep.join(f"{util.iso(a)} → {util.iso(b)}" for a, b in gaps[:3]) or tr("无")
 
     bands = [(i["start_ts"], i["end_ts"]) for i in incidents
              if i["class"] in ("link_down", "lan_down", "wan_down", "dns_fail")]
@@ -612,33 +632,33 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     th = cfg["thresholds"]
     latency_svg = line_chart(
         [
-            {"name": "外网（最慢目标）", "color": "#0891b2", "points": wan_max_pts,
+            {"name": tr("外网（最慢目标）"), "color": "#0891b2", "points": wan_max_pts,
              "width": 1.2, "opacity": 0.9},
-            {"name": "外网（最快目标）", "color": "#1d4ed8", "points": wan_pts, "width": 1.5},
-            {"name": "网关", "color": "#64748b", "points": gw_pts, "width": 1.0, "opacity": 0.8},
+            {"name": tr("外网（最快目标）"), "color": "#1d4ed8", "points": wan_pts, "width": 1.5},
+            {"name": tr("网关"), "color": "#64748b", "points": gw_pts, "width": 1.0, "opacity": 0.8},
         ],
         span_start, span_end, bands=bands, gap_bands=gaps, unit="ms",
-        refline=float(th.get("rtt_warn_ms", 150)), refline_label="告警阈值 150ms",
+        refline=float(th.get("rtt_warn_ms", 150)), refline_label=tr("告警阈值 150ms"),
     )
     loss_svg = line_chart(
         [
-            {"name": "最高丢包", "color": "#dc2626", "points": loss_max_pts, "width": 1.2,
+            {"name": tr("最高丢包"), "color": "#dc2626", "points": loss_max_pts, "width": 1.2,
              "opacity": 0.85},
-            {"name": "平均丢包", "color": "#ea580c", "points": loss_pts, "width": 1.4},
+            {"name": tr("平均丢包"), "color": "#ea580c", "points": loss_pts, "width": 1.4},
         ],
         span_start, span_end, bands=bands, gap_bands=gaps, unit="%", height=170,
-        refline=float(th.get("loss_warn_pct", 20)), refline_label="告警阈值 20%",
+        refline=float(th.get("loss_warn_pct", 20)), refline_label=tr("告警阈值 20%"),
     )
 
     wifi_svg = ""
     if any(v is not None for _, v in rssi_pts):
         wifi_svg = line_chart(
             [
-                {"name": "信号强度 RSSI", "color": "#1d4ed8", "points": rssi_pts, "width": 1.5},
-                {"name": "噪声底 Noise", "color": "#98a2b3", "points": noise_pts, "width": 1.1},
+                {"name": tr("信号强度 RSSI"), "color": "#1d4ed8", "points": rssi_pts, "width": 1.5},
+                {"name": tr("噪声底 Noise"), "color": "#98a2b3", "points": noise_pts, "width": 1.1},
             ],
             span_start, span_end, bands=bands, gap_bands=gaps, unit="dBm", height=200,
-            refline=float(th.get("rssi_warn_dbm", -70)), refline_label="弱信号门限 -70dBm",
+            refline=float(th.get("rssi_warn_dbm", -70)), refline_label=tr("弱信号门限 -70dBm"),
         )
 
     # ---------------- 探针成功率
@@ -677,7 +697,8 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             probe_stats[k][1] += 1
             probe_stats[k][0] += 1 if x.get("ok") else 0
     probe_html = "".join(
-        bar_row(k, v[0], v[1]) for k, v in sorted(probe_stats.items(), key=lambda kv: -kv[1][1])
+        bar_row(_localize_probe_key(k), v[0], v[1])
+        for k, v in sorted(probe_stats.items(), key=lambda kv: -kv[1][1])
     )
 
     # ---------------- 事件表
@@ -687,34 +708,36 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             ev_html = ""
             if i.get("evidence"):
                 ev_html = "".join(
-                    f'<details><summary>{_esc(e.get("label") or e.get("kind"))} · {util.hhmmss(e["ts"])}</summary>'
+                    f'<details><summary>{_esc(tr(e.get("label") or e.get("kind")))} · {util.hhmmss(e["ts"])}</summary>'
                     f'{_evidence_block(e)}</details>' for e in i["evidence"]
                 )
             metrics = []
             if i.get("rssi_min") is not None:
                 metrics.append(f"RSSI {i['rssi_min']}")
             if i.get("rtt_max") is not None:
-                metrics.append(f"最差 RTT {i['rtt_max']:.0f}ms")
+                metrics.append(tr("最差 RTT {v:.0f}ms", v=i['rtt_max']))
             if i.get("loss_max") is not None:
-                metrics.append(f"最高丢包 {i['loss_max']:.0f}%")
-            metrics.append(f"{i['tick_count']} 采样点")
-            bleep = ' <span class="tag" style="color:#b45309;background:#fffbeb;border-color:#fcd34d">瞬断</span>' if i["is_bleep"] else ""
+                metrics.append(tr("最高丢包 {v:.0f}%", v=i['loss_max']))
+            metrics.append(tr("{n} 采样点", n=i['tick_count']))
+            bleep = tr(' <span class="tag" style="color:#b45309;background:#fffbeb;border-color:#fcd34d">瞬断</span>') if i["is_bleep"] else ""
+            reasons_sep = "; " if i18n.is_en() else "；"
+            reasons_txt = reasons_sep.join(tr(r) for r in i["reasons"] if r)
             rows.append(
                 "<tr>"
                 f'<td class="num">{_esc(i["day"][5:])} {_esc(i["start_hhmm"])}</td>'
                 f'<td class="num">{_esc(i["duration_human"])}</td>'
                 f'<td>{_status_tag(i["class"])}{bleep}</td>'
                 f'<td class="num">{_esc(" / ".join(metrics) or "-")}</td>'
-                f'<td>{_esc("；".join(i["reasons"]) or "-")}{ev_html}</td>'
+                f'<td>{_esc(reasons_txt or "-")}{ev_html}</td>'
                 "</tr>"
             )
         incidents_html = (
-            '<table><thead><tr><th>开始</th><th>持续</th><th>类型</th>'
-            "<th>现场指标</th><th>判定依据 / 取证</th></tr></thead><tbody>"
+            tr('<table><thead><tr><th>开始</th><th>持续</th><th>类型</th>')
+            + tr("<th>现场指标</th><th>判定依据 / 取证</th></tr></thead><tbody>")
             + "".join(rows) + "</tbody></table>"
         )
     else:
-        incidents_html = '<p class="sub">观测期内没有登记到异常事件。</p>'
+        incidents_html = tr('<p class="sub">观测期内没有登记到异常事件。</p>')
 
     # ---------------- 排查手册（按实际出现的类型排序）
     present = list(dict.fromkeys(
@@ -726,17 +749,21 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
         if not pb:
             continue
         checks = "".join(
-            f'<li><span class="t">{_esc(t)}</span><code>{_esc(c)}</code></li>' for t, c in pb["checks"]
+            f'<li><span class="t">{_esc(tr(task))}</span><code>{_esc(tr(cmd))}</code></li>'
+            for task, cmd in pb["checks"]
         )
         opened = " open" if idx == 0 else ""
+        meaning = tr(pb["meaning"])
+        # 中文按句号截首句做摘要；英文按第一个句点截
+        first_sentence = meaning.split("。")[0] if i18n.is_zh() else meaning.split(". ")[0]
         manual.append(
-            f'<details{opened}><summary>{_status_tag(cls)} {_esc(analyze.STATUS_LABEL.get(cls, cls))}'
-            f' — {_esc(pb["meaning"].split("。")[0])}</summary>'
+            f'<details{opened}><summary>{_status_tag(cls)} {_esc(tr(analyze.STATUS_LABEL.get(cls, cls)))}'
+            f' — {_esc(first_sentence)}</summary>'
             f'<ul class="actions">{checks}</ul></details>'
         )
 
     manual_html = ("".join(manual) if incidents
-                   else '<p class="sub">本次未触发异常事件，无需排查。</p>')
+                   else tr('<p class="sub">本次未触发异常事件，无需排查。</p>'))
 
     # ---------------- 结论（按健康度着色）+ 综合评级徽章
     hard_cnt = 0 if summary.get("empty") else (summary.get("hard_incident_count") or 0)
@@ -757,36 +784,42 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
     else:
         g, gc = _grade(summary)
         grade_badge = (f'<span class="grade" style="color:{gc};background:{gc}14;'
-                       f'border-color:{gc}55">评级 {g}</span>')
+                       f'border-color:{gc}55">{tr("评级 {g}", g=g)}</span>')
 
     # ---------------- 分层健康条
     layer_html = _layer_bars(ticks, cfg) if ticks else ""
 
     # ---------------- KPI
     if summary.get("empty"):
-        kpis = _kpi("采样点", "0", "尚未采集数据")
+        kpis = _kpi(tr("采样点"), "0", tr("尚未采集数据"))
     else:
         up = summary.get("sample_uptime_pct", summary["uptime_pct"])
         up_color = "#16a34a" if up >= 99.5 else ("#d97706" if up >= 98 else "#dc2626")
         coverage = summary.get("coverage_pct", 100)
         coverage_color = "#16a34a" if coverage >= 80 else "#d97706"
         kpis = (
-            _kpi("整体可用率", f"{up}%",
-                 f"基于 {summary['tick_count']} 个采样点 · 硬中断 {summary.get('sample_hard_uptime_pct', summary['hard_uptime_pct'])}%",
+            _kpi(tr("整体可用率"), f"{up}%",
+                 tr("基于 {n} 个采样点 · 硬中断 {pct}%",
+                   n=summary['tick_count'], pct=summary.get('sample_hard_uptime_pct', summary['hard_uptime_pct'])),
                  up_color)
-            + _kpi("异常事件", str(summary["incident_count"]),
-                   f"其中瞬断 {summary['bleep_count']} 次",
+            + _kpi(tr("异常事件"), str(summary["incident_count"]),
+                   tr("其中瞬断 {n} 次", n=summary['bleep_count']),
                    "#dc2626" if summary["hard_incident_count"] else "#16a34a")
-            + _kpi("累计异常时长", summary["down_total_human"],
-                   f"硬中断 {summary['hard_down_total_human']}")
-            + _kpi("平均延迟", f"{summary.get('rtt_avg') if summary.get('rtt_avg') is not None else '-'} ms",
-                   f"P95 {summary.get('rtt_p95') if summary.get('rtt_p95') is not None else '-'} / 最差 {summary.get('rtt_worst') if summary.get('rtt_worst') is not None else '-'} ms")
-            + _kpi("平均丢包", f"{summary.get('loss_avg') if summary.get('loss_avg') is not None else 0}%",
-                   f"P95 {summary.get('loss_p95') if summary.get('loss_p95') is not None else '-'}%")
-            + _kpi("无线信号", f"{summary.get('rssi_avg') if summary.get('rssi_avg') is not None else '-'} dBm",
-                   f"最低 {summary.get('rssi_min') if summary.get('rssi_min') is not None else '-'} dBm / SNR {summary.get('snr_avg') if summary.get('snr_avg') is not None else '-'} dB")
-            + _kpi("采样覆盖率", f"{coverage}%",
-                   f"有效 {summary.get('effective_span_human', '-')} / 跨度 {summary['span_human']}",
+            + _kpi(tr("累计异常时长"), summary["down_total_human"],
+                   tr("硬中断 {v}", v=summary['hard_down_total_human']))
+            + _kpi(tr("平均延迟"), f"{summary.get('rtt_avg') if summary.get('rtt_avg') is not None else '-'} ms",
+                   tr("P95 {p95} / 最差 {worst} ms",
+                     p95=summary.get('rtt_p95') if summary.get('rtt_p95') is not None else '-',
+                     worst=summary.get('rtt_worst') if summary.get('rtt_worst') is not None else '-'))
+            + _kpi(tr("平均丢包"), f"{summary.get('loss_avg') if summary.get('loss_avg') is not None else 0}%",
+                   tr("P95 {pct}%", pct=summary.get('loss_p95') if summary.get('loss_p95') is not None else '-'))
+            + _kpi(tr("无线信号"), f"{summary.get('rssi_avg') if summary.get('rssi_avg') is not None else '-'} dBm",
+                   tr("最低 {min} dBm / SNR {snr} dB",
+                     min=summary.get('rssi_min') if summary.get('rssi_min') is not None else '-',
+                     snr=summary.get('snr_avg') if summary.get('snr_avg') is not None else '-'))
+            + _kpi(tr("采样覆盖率"), f"{coverage}%",
+                   tr("有效 {eff} / 跨度 {span}",
+                     eff=summary.get('effective_span_human', '-'), span=summary['span_human']),
                    coverage_color)
         )
 
@@ -809,48 +842,51 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
             f"{s} {round(gw_sig_count.get(s, 0) / gw_total * 100)}%"
             for s in ("arp", "icmp", "tcp_rst")
         )
-        gw_row = (
-            f"{env.get('gateway') or '-'}（观测期存活信号：{sig_pct}"
-            f" · 最近 ARP MAC {gw_mac_last or '未解析到'}，共 {gw_total} 个采样点）"
-        )
+        gw_row = tr("{gw}（观测期存活信号：{signals} · 最近 ARP MAC {mac}，共 {n} 个采样点）",
+                   gw=env.get('gateway') or '-', signals=sig_pct,
+                   mac=gw_mac_last or tr('未解析到'), n=gw_total)
     else:
         gw_row = env.get("gateway") or "-"
 
     # ---------------- 环境
     env_rows = [
-        ("主机", env.get("host") or f"{platform.node()} · macOS {platform.mac_ver()[0]}"),
-        ("采集区间", f"{util.iso(span_start)} → {util.iso(span_end)}"),
-        ("采样完整性",
-         f"{summary.get('tick_count', 0)}/{summary.get('expected_ticks', '-')} 点 · "
-         f"有效 {summary.get('effective_span_human', '-')} / 跨度 {summary.get('span_human', '-')} · "
-         f"覆盖率 {summary.get('coverage_pct', '-')}%"),
-        ("未采集时段", f"{gap_text}（共 {summary.get('gap_count', len(gaps))} 段）"),
-        ("采样间隔", f"{cfg.get('interval_seconds')} 秒"),
-        ("默认路由接口", _esc(env.get("interface") or (ticks[0].get("iface") if ticks else "-") or "-")),
-        ("网关", gw_row),
-        ("DNS 服务器", "、".join(env.get("nameservers") or []) or "-"),
-        ("无线网卡", _esc(env.get("wifi_card") or "-")),
-        ("ICMP 判定目标", "、".join(
+        (tr("主机"), env.get("host") or f"{platform.node()} · macOS {platform.mac_ver()[0]}"),
+        (tr("采集区间"), f"{util.iso(span_start)} → {util.iso(span_end)}"),
+        (tr("采样完整性"),
+         tr("{got}/{expected} 点 · 有效 {eff} / 跨度 {span} · 覆盖率 {cov}%",
+           got=summary.get('tick_count', 0), expected=summary.get('expected_ticks', '-'),
+           eff=summary.get('effective_span_human', '-'), span=summary.get('span_human', '-'),
+           cov=summary.get('coverage_pct', '-'))),
+        (tr("未采集时段"), tr("{gaps}（共 {n} 段）",
+                        gaps=gap_text, n=summary.get('gap_count', len(gaps)))),
+        (tr("采样间隔"), tr("{n} 秒", n=cfg.get('interval_seconds'))),
+        (tr("默认路由接口"), _esc(env.get("interface") or (ticks[0].get("iface") if ticks else "-") or "-")),
+        (tr("网关"), gw_row),
+        (tr("DNS 服务器"), "、".join(env.get("nameservers") or []) or "-"),
+        (tr("无线网卡"), _esc(env.get("wifi_card") or "-")),
+        (tr("ICMP 判定目标"), "、".join(
             f"{t['name']}({t['host']})" for t in cfg.get("icmp_targets", []) if t.get("actor")) or "-"),
-        ("HTTP 探针", "、".join(cfg.get("http", {}).get("urls", [])) or "-"),
-        ("数据目录", str(REPORT_DIR.parent / "data")),
-        ("报告目录", str(REPORT_DIR)),
+        (tr("HTTP 探针"), "、".join(cfg.get("http", {}).get("urls", [])) or "-"),
+        (tr("数据目录"), str(REPORT_DIR.parent / "data")),
+        (tr("报告目录"), str(REPORT_DIR)),
     ]
     env_html = "".join(
         f'<dt>{_esc(k)}</dt><dd>{_esc(v)}</dd>' for k, v in env_rows
     )
 
-    legend = ('<span><i style="background:#f2f4f7;border:1px solid #cfd4dc"></i>无数据</span>'
+    legend = (tr('<span><i style="background:#f2f4f7;border:1px solid #cfd4dc"></i>无数据</span>')
               + "".join(
-                  f'<span><i style="background:{c}"></i>{_esc(analyze.STATUS_LABEL[s])}</span>'
+                  f'<span><i style="background:{c}"></i>{_esc(tr(analyze.STATUS_LABEL[s]))}</span>'
                   for s, c in analyze.STATUS_COLOR.items()
               ))
 
     n_days = len({util.day_str(t["ts"]) for t in ticks}) if ticks else 0
-    title = f"网络健康报告 {util.day_str(span_start)}" + ("" if n_days <= 1 else f" ~ {util.day_str(span_end)}")
+    title = tr("网络健康报告 {day}", day=util.day_str(span_start)) + (
+        "" if n_days <= 1 else f" ~ {util.day_str(span_end)}")
+    html_lang = "en" if i18n.is_en() else "zh-CN"
 
     return f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+<html lang="{html_lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_esc(title)}{_esc(title_suffix)}</title>
 <style>{CSS}</style></head>
@@ -859,11 +895,11 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 <header class="top">
   <div>
     <h1>{_esc(title)}{grade_badge}</h1>
-    <p class="sub">分层探针采集 · 自动归因 · 离线可读</p>
+    <p class="sub">{tr("分层探针采集 · 自动归因 · 离线可读")}</p>
   </div>
   <div class="meta">
-    生成时间 {_esc(util.iso(util.now_ts()))}<br>
-    采样点 {summary.get("tick_count", 0)} · 有效采样 {summary.get("effective_span_human", "-")} · 时间跨度 {summary.get("span_human", "-")}
+    {tr("生成时间 ")}{_esc(util.iso(util.now_ts()))}<br>
+    {tr("采样点 ")}{summary.get("tick_count", 0)} · {tr("有效采样 ")}{summary.get("effective_span_human", "-")} · {tr("时间跨度 ")}{summary.get("span_human", "-")}
   </div>
 </header>
 
@@ -872,59 +908,59 @@ def render(cfg: dict, ticks: list[dict], incidents: list[dict], evidence: list[d
 <div class="grid kpis">{kpis}</div>
 
 <div class="section">
-  <h2><span class="idx">01</span>分层健康总览</h2>
-  <div class="card">{layer_html or '<p class="sub">暂无数据</p>'}
-    <p class="layer-note">每个采样点按最高优先级归入一个异常层（无线链路 → 网关 → 外网 → DNS → 传输质量 → 信号强度），条形为该层健康采样占比。哪一层条形不满格，故障就在哪一层。</p>
+  <h2><span class="idx">01</span>{tr("分层健康总览")}</h2>
+  <div class="card">{layer_html or tr('<p class="sub">暂无数据</p>')}
+    <p class="layer-note">{tr("每个采样点按最高优先级归入一个异常层（无线链路 → 网关 → 外网 → DNS → 传输质量 → 信号强度），条形为该层健康采样占比。哪一层条形不满格，故障就在哪一层。")}</p>
   </div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">02</span>可用性时间带</h2>
+  <h2><span class="idx">02</span>{tr("可用性时间带")}</h2>
   <div class="legend">{legend}</div>
-  <div class="card" style="padding:16px 18px">{ribbon(ticks, cfg) if ticks else '<p class="sub">暂无数据</p>'}</div>
+  <div class="card" style="padding:16px 18px">{ribbon(ticks, cfg) if ticks else tr('<p class="sub">暂无数据</p>')}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">03</span>延迟与丢包</h2>
+  <h2><span class="idx">03</span>{tr("延迟与丢包")}</h2>
   <div class="legend">
-    <span><i style="background:#1d4ed8"></i>外网（最快目标）</span>
-    <span><i style="background:#0891b2"></i>外网（最慢目标）</span>
-    <span><i style="background:#64748b"></i>网关</span>
-    <span><i style="background:#dc2626;opacity:.35"></i>硬中断时段</span>
-    <span><i style="background:#f2f4f7;border:1px solid #cfd4dc"></i>未采集空档</span>
+    <span><i style="background:#1d4ed8"></i>{tr("外网（最快目标）")}</span>
+    <span><i style="background:#0891b2"></i>{tr("外网（最慢目标）")}</span>
+    <span><i style="background:#64748b"></i>{tr("网关")}</span>
+    <span><i style="background:#dc2626;opacity:.35"></i>{tr("硬中断时段")}</span>
+    <span><i style="background:#f2f4f7;border:1px solid #cfd4dc"></i>{tr("未采集空档")}</span>
   </div>
   <div class="card" style="padding:14px 10px 6px">{latency_svg}
   <div style="margin-top:10px">{loss_svg}</div></div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">04</span>无线信号质量</h2>
-  <div class="card" style="padding:14px 10px 6px">{wifi_svg or '<p class="sub" style="padding:8px">本轮未采集到无线数据（有线接口或未开启无线采集）。</p>'}</div>
+  <h2><span class="idx">04</span>{tr("无线信号质量")}</h2>
+  <div class="card" style="padding:14px 10px 6px">{wifi_svg or tr('<p class="sub" style="padding:8px">本轮未采集到无线数据（有线接口或未开启无线采集）。</p>')}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">05</span>各层探针成功率</h2>
-  <div class="card">{probe_html or '<p class="sub">暂无数据</p>'}</div>
+  <h2><span class="idx">05</span>{tr("各层探针成功率")}</h2>
+  <div class="card">{probe_html or tr('<p class="sub">暂无数据</p>')}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">06</span>异常事件明细</h2>
+  <h2><span class="idx">06</span>{tr("异常事件明细")}</h2>
   <div class="card">{incidents_html}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">07</span>逐层排查手册</h2>
+  <h2><span class="idx">07</span>{tr("逐层排查手册")}</h2>
   <div class="card">{manual_html}</div>
 </div>
 
 <div class="section">
-  <h2><span class="idx">08</span>采集环境快照</h2>
+  <h2><span class="idx">08</span>{tr("采集环境快照")}</h2>
   <div class="card"><dl class="dl">{env_html}</dl></div>
 </div>
 
 <footer>
-  netmon · 数据目录 {_esc(str(REPORT_DIR.parent / "data"))} · 报告目录 {_esc(str(REPORT_DIR))}<br>
-  跨天汇总：python3 -m netmon report --days N &nbsp;|&nbsp; 导出 CSV：python3 -m netmon export
+  {tr("netmon · 数据目录 ")}{_esc(str(REPORT_DIR.parent / "data"))} · {tr("报告目录 ")}{_esc(str(REPORT_DIR))}<br>
+  {tr("跨天汇总：python3 -m netmon report --days N &nbsp;|&nbsp; 导出 CSV：python3 -m netmon export")}
 </footer>
 
 </div></body></html>
