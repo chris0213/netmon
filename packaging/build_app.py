@@ -36,7 +36,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 APP_NAME = "NetMon.app"
-VERSION = "1.0.0"
+
+# 版本号唯一真相源：netmon/__init__.py。打包脚本不再各自硬编码，避免漂移。
+sys.path.insert(0, str(ROOT))
+from netmon import __version__ as VERSION  # noqa: E402
+
 IDENTIFIER = "com.netmon.desktop"
 
 # 同目录的运行时收集器（构建期工具，不进 .app）

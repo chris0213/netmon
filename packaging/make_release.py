@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """组装可转发的分发包：签名 app → DMG → 与安装说明一起打成 zip。
 
-产物：dist/NetMon-1.0.0-release.zip
-  ├─ NetMon-1.0.0.dmg         已 ad-hoc 签名的安装包（含内嵌 Python 运行时）
+产物：dist/NetMon-<版本>-release.zip（版本取自 netmon/__init__.py）
+  ├─ NetMon-<版本>.dmg        已 ad-hoc 签名的安装包（含内嵌 Python 运行时）
   └─ INSTALL-GUIDE.zh-CN.md   安装说明 / 隐私说明
 
 app 自带 Python 与 Tcl/Tk，接收方无需安装任何运行时；代价是 DMG 从早期的
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -23,8 +24,13 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DIST = ROOT / "dist"
 STAGE = DIST / "release-stage"
-DMG = DIST / "NetMon-1.0.0.dmg"
-OUT_ZIP = DIST / "NetMon-1.0.0-release.zip"
+
+# 与 build_app.py 共用同一版本号来源，产物文件名随版本自动变化。
+sys.path.insert(0, str(ROOT))
+from netmon import __version__ as VERSION  # noqa: E402
+
+DMG = DIST / f"NetMon-{VERSION}.dmg"
+OUT_ZIP = DIST / f"NetMon-{VERSION}-release.zip"
 GUIDE = ROOT / "docs" / "安装说明-给同事.md"
 
 

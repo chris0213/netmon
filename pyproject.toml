@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netmon"
-version = "0.1.0"
+dynamic = ["version"]
 description = "macOS 网络断连定时监控与自动归因工具"
 requires-python = ">=3.9"
 dependencies = []
@@ -14,3 +14,7 @@ netmon = "netmon.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["netmon*"]
+
+# 版本号与 app / DMG 共用 netmon/__init__.py 的 __version__
+[tool.setuptools.dynamic]
+version = {attr = "netmon.__version__"}
