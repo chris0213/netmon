@@ -723,6 +723,9 @@ class UninstallDialog(tk.Toplevel):
 # ------------------------------------------------------------------ 主应用
 class App:
     def __init__(self, root: tk.Tk):
+        # 先按配置初始化语言，再构建界面——否则界面用默认 zh 渲染、后台刷新
+        # 又按配置切成 en，导致按钮中文而数据行英文的混杂。
+        load_config()
         self.root = root
         self.root.title(tr("网哨 NetMon") + f"  ·  {__version__}")
         self.root.configure(bg=BG)
@@ -1032,7 +1035,8 @@ class App:
     def _snapshot(self) -> dict:
         """在后台线程读取服务状态与数据；主线程只消费结果做渲染。"""
         running, pid, service = self._service_state()
-        cfg = load_config()
+        # 后台刷新只取配置参数，绝不改语言——语言由启动/界面切换时设定。
+        cfg = load_config(apply_lang=False)
         snap = {
             "running": running,
             "pid": pid,

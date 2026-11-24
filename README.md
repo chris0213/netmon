@@ -6,7 +6,7 @@
 
 ## 下载
 
-**macOS 桌面版（Apple 芯片）**：前往 [Releases 页面](https://github.com/chris0213/netmon/releases/latest) 下载 `NetMon-1.2.0-release.zip`（含 DMG + 中文安装说明）。仅支持 arm64 / macOS 11+，无需安装 Python 或任何依赖。
+**macOS 桌面版（Apple 芯片）**：前往 [Releases 页面](https://github.com/chris0213/netmon/releases/latest) 下载 `NetMon-1.2.1-release.zip`（含 DMG + 中文安装说明）。仅支持 arm64 / macOS 11+，无需安装 Python 或任何依赖。
 
 源码运行与自行打包见下方「安装与运行」。
 
@@ -31,12 +31,12 @@
 不想敲命令？用打包好的 macOS 应用：双击打开、图形界面点按钮即可**启动/停止监控**和**生成报告**。桌面版报告只覆盖最新采集日；需要跨天汇总时用命令行 `python3 -m netmon report --days 7`。
 
 ```bash
-open dist/NetMon-1.2.0.dmg    # 把 网哨 NetMon 拖进 Applications 即可安装
+open dist/NetMon-1.2.1.dmg    # 把 网哨 NetMon 拖进 Applications 即可安装
 ```
 
 **自带运行时**：app 内嵌 Python 与 Tcl/Tk 9，接收方**不需要安装任何东西**——既不会因为没装 Python 打不开，也不会因为系统自带 Tk 8.5 白屏。代价是体积：app 42MB / DMG 23MB。当前构建为 **arm64，最低 macOS 11.0**；给 Intel Mac 打包需指定 universal2 运行时，见 **[docs/DESKTOP.md](docs/DESKTOP.md)**。
 
-**发给同事**：直接用 `dist/NetMon-1.2.0-release.zip`（内含 DMG + 中文安装说明）。应用已做 ad-hoc 签名，报告默认脱敏内网 IP/MAC，可安全转发。同事首次打开若被 Gatekeeper 拦，按说明「右键 → 打开」即可。详见 **[docs/安装说明-给同事.md](docs/安装说明-给同事.md)**。
+**发给同事**：直接用 `dist/NetMon-1.2.1-release.zip`（内含 DMG + 中文安装说明）。应用已做 ad-hoc 签名，报告默认脱敏内网 IP/MAC，可安全转发。同事首次打开若被 Gatekeeper 拦，按说明「右键 → 打开」即可。详见 **[docs/安装说明-给同事.md](docs/安装说明-给同事.md)**。
 
 桌面版与命令行是同一套引擎，数据放在 `~/Library/Application Support/NetMon/`，升级 app 不会丢数据。应用被移动后会在启动时自动修正后台服务的绝对路径；卸载走界面底栏的 **卸载 NetMon…**（服务必卸，数据与应用可选，一律进废纸篓）。完整安装、操作与重新打包说明见 **[docs/DESKTOP.md](docs/DESKTOP.md)**。
 
@@ -162,7 +162,7 @@ netmon/
   docs/              README 用截图 + DESKTOP.md 桌面版说明
   data/              ticks-YYYY-MM-DD.jsonl / evidence-*.jsonl / netmon.log（不入库）
   reports/           生成的 HTML 报告（不入库，仅保留 demo-report.html）
-  dist/              打包产物 NetMon.app / NetMon-1.2.0.dmg（不入库）
+  dist/              打包产物 NetMon.app / NetMon-1.2.1.dmg（不入库）
 ```
 
 ## 报告怎么读

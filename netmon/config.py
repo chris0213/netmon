@@ -113,7 +113,14 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def load_config(path: Path | None = None) -> dict:
+def load_config(path: Path | None = None, apply_lang: bool = True) -> dict:
+    """加载配置。
+
+    apply_lang=True（默认）时顺带把进程语言同步为配置值——适用于 CLI 启动、
+    GUI 启动等"初始化"场景。后台刷新（GUI 的 _snapshot）须传 False：它只是
+    读配置取采样间隔等参数，绝不能改语言，否则界面已切换的语言会被后台线程
+    重新按配置文件覆盖，造成按钮中文、数据行英文的混杂。
+    """
     p = Path(path) if path else CONFIG_PATH
     user: dict = {}
     if p.exists():
@@ -122,10 +129,10 @@ def load_config(path: Path | None = None) -> dict:
         except (json.JSONDecodeError, OSError):
             user = {}
     cfg = _deep_merge(DEFAULTS, user)
-    # 语言在这里统一初始化：所有调用 load_config 的入口（GUI/CLI/报告）自动生效，
-    # 不必各自记得 set_language。环境变量 NETMON_LANG 优先级更高。
-    from . import i18n
-    i18n.init_from_config(cfg)
+    if apply_lang:
+        # 环境变量 NETMON_LANG 优先级更高（init_from_config 内部处理）。
+        from . import i18n
+        i18n.init_from_config(cfg)
     cfg["_config_path"] = str(p)
     cfg["_root"] = str(ROOT)
     return cfg
