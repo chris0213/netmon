@@ -4,7 +4,7 @@
 
 ## 安装
 
-1. 打开 `dist/NetMon-1.1.0.dmg`。
+1. 打开 `dist/NetMon-1.2.0.dmg`。
 2. 把 **网哨 NetMon** 拖进 **Applications** 文件夹（DMG 里已附软链）。
 3. 从启动台或 Applications 双击 **网哨 NetMon** 打开。
 
@@ -107,8 +107,8 @@ python3 packaging/build_app.py
 
 # 3. 一键组装分发包：签名校验 → DMG（含校验）→ 与安装说明打成 zip
 python3 packaging/make_release.py
-#   产物：dist/NetMon-1.1.0.dmg
-#         dist/NetMon-1.1.0-release.zip（DMG + 给同事的安装说明）
+#   产物：dist/NetMon-1.2.0.dmg
+#         dist/NetMon-1.2.0-release.zip（DMG + 给同事的安装说明）
 ```
 
 > 关于签名：`build_app.py` 默认对 app 做 **ad-hoc 签名**（`codesign -s -`），消除"未签名"告警。但它没有 Developer ID、无法公证，同事首次打开仍需「右键 → 打开」；要彻底去掉这一步需购买 Apple 开发者账号做正式签名 + 公证。给同事转发的说明见 `docs/安装说明-给同事.md`。

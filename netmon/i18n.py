@@ -178,6 +178,15 @@ _EN: dict[str, str] = {
     "质量异常": "Quality issue",
     "配置": "Config",
 
+    # ---- 语言切换 ----
+    "语言": "Language",
+    "中文": "Chinese",
+    "英文": "English",
+    "切换为英文": "Switch to English",
+    "切换为中文": "Switch to Chinese",
+    "已切换为英文": "Switched to English",
+    "已切换为中文": "Switched to Chinese",
+
     # ---- 交互反馈 ----
     "请稍候": "Please Wait",
     "上一个操作还在进行中。": "Another operation is still in progress.",

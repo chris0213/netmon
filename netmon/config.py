@@ -131,6 +131,28 @@ def load_config(path: Path | None = None) -> dict:
     return cfg
 
 
+def save_language(lang: str, path: Path | None = None) -> Path:
+    """把界面语言写入配置文件，保留用户已有的其它配置字段。
+
+    数据目录里的 config.json 可能是旧版遗留（没有 language 字段），也可能被
+    用户手工改过——所以这里读完整 JSON 再合并单字段，绝不整体覆盖。
+    """
+    p = Path(path) if path else CONFIG_PATH
+    user: dict = {}
+    if p.exists():
+        try:
+            user = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            user = {}
+    user["language"] = "en" if str(lang).lower().startswith("en") else "zh"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(user, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 同步进程内语言，界面重建后立即生效
+    from . import i18n
+    i18n.set_language(user["language"])
+    return p
+
+
 def write_default_config(path: Path | None = None, force: bool = False) -> Path:
     p = Path(path) if path else CONFIG_PATH
     if p.exists() and not force:

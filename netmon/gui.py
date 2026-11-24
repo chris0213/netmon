@@ -24,7 +24,7 @@ from tkinter import messagebox, ttk
 
 from . import __version__, analyze, i18n, launchd, probe, report, store, util
 from .i18n import t as tr
-from .config import CONFIG_PATH, DATA_DIR, REPORT_DIR, load_config
+from .config import CONFIG_PATH, DATA_DIR, REPORT_DIR, load_config, save_language
 
 # ================================================================== 样式 token
 # 主色（蓝）
@@ -733,6 +733,8 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self._q: queue.Queue = queue.Queue()
+        self._poll_job = None      # 结果轮询定时器（语言切换时取消旧链再重启）
+        self._auto_job = None      # 自动刷新定时器
         self._busy = False
         self._refreshing = False
         self._running = False
@@ -744,7 +746,7 @@ class App:
         self._apply_button_states()
         self._poll_queue()
         self.root.after(50, self._refresh_async)
-        self.root.after(REFRESH_MS, self._auto_refresh)
+        self._auto_job = self.root.after(REFRESH_MS, self._auto_refresh)
         # 启动后自愈后台服务路径（应用可能被移动过），稍等让界面先画出来
         self.root.after(800, self._reconcile_service)
 
@@ -949,6 +951,20 @@ class App:
                            font=_f(F_SMALL), fg=FAINT, bg=BG)
         cfg_lbl.pack(side="left")
         ToolTip(cfg_lbl, lambda: str(CONFIG_PATH))
+
+        # 语言切换：两个并排的小标签，当前语言高亮（蓝色加粗），点击即切换。
+        lang_box = tk.Frame(foot, bg=BG)
+        lang_box.pack(side="left", padx=(24, 0))
+        tk.Label(lang_box, text=tr("语言"), font=_f(F_SMALL), fg=FAINT,
+                 bg=BG).pack(side="left", padx=(0, 6))
+        self._lang_labels = {}
+        for code, caption in (("zh", tr("中文")), ("en", tr("英文"))):
+            lbl = tk.Label(lang_box, text=caption, font=_f(F_SMALL), cursor="hand2")
+            lbl.pack(side="left", padx=(0, 8))
+            lbl.bind("<Button-1>", lambda _e, c=code: self.on_switch_language(c))
+            self._lang_labels[code] = lbl
+        self._paint_lang_toggle()
+
         # 卸载入口放底栏右侧：低频操作，不占按钮区的视觉重量
         self._uninstall_lbl = tk.Label(foot, text=tr("卸载 NetMon…"), font=_f(F_SMALL),
                                        fg=FAINT, bg=BG, cursor="hand2")
@@ -1278,7 +1294,7 @@ class App:
                 self._refresh_async()
         except queue.Empty:
             pass
-        self.root.after(200, self._poll_queue)
+        self._poll_job = self.root.after(200, self._poll_queue)
 
     def _flash(self, text: str, color: str = GREEN, hold_ms: int = 5000):
         """在「最近事件」标题右侧显示短暂内联提示，替代模态弹窗。
@@ -1314,7 +1330,7 @@ class App:
 
     def _auto_refresh(self):
         self._refresh_async()
-        self.root.after(REFRESH_MS, self._auto_refresh)
+        self._auto_job = self.root.after(REFRESH_MS, self._auto_refresh)
 
     # ------------------------------------------------------------------ 自愈
     def _reconcile_service(self):
@@ -1340,6 +1356,53 @@ class App:
         else:
             self._flash(tr("应用位置已变更，后台服务路径已自动修复，下次启动监控时生效。"), AMBER, 9000)
         self._refresh_async()
+
+    # ------------------------------------------------------------------ 语言切换
+    def _paint_lang_toggle(self):
+        """高亮当前语言标签，其余置灰。"""
+        current = i18n.get_language()
+        for code, lbl in self._lang_labels.items():
+            active = code == current
+            lbl.configure(font=_f(F_SMALL, active),
+                          fg=BLUE if active else FAINT,
+                          underline=1 if active else 0)
+
+    def on_switch_language(self, code: str):
+        """写配置 → 切进程语言 → 重建界面。运行中状态与数据保持不变。"""
+        if code == i18n.get_language():
+            return
+        if self._busy:
+            messagebox.showinfo(tr("请稍候"), tr("上一个操作还在进行中。"))
+            return
+        try:
+            save_language(code)
+        except OSError as exc:
+            messagebox.showerror(tr("操作失败"), str(exc))
+            return
+
+        # 快照缓存里存着已翻译的动态文案（如时长），换语言后必须让下次刷新重算
+        self._cache_key = None
+        self._cache_data = None
+        self._refreshing = False
+
+        # 停掉旧的轮询/刷新定时器，避免与新控件树形成两条并行链
+        for job in (self._poll_job, self._auto_job):
+            if job:
+                try:
+                    self.root.after_cancel(job)
+                except tk.TclError:
+                    pass
+
+        # 销毁旧控件树后按新语言重建；Tk 单线程，回调不会插进重建中间。
+        for child in list(self.root.winfo_children()):
+            child.destroy()
+        self.root.title(tr("网哨 NetMon") + f"  ·  {__version__}")
+        self._build_ui()
+        self._apply_button_states()
+        self._poll_job = self.root.after(200, self._poll_queue)
+        self._refresh_async()                                   # 用新语言重绘数据/事件表
+        self._auto_job = self.root.after(REFRESH_MS, self._auto_refresh)
+        self._flash(tr("已切换为英文") if i18n.is_en() else tr("已切换为中文"))
 
     # ------------------------------------------------------------------ 操作
     def on_start(self):
