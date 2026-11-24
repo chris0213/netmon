@@ -198,10 +198,11 @@ def _dns_diverge(tick: dict) -> str | None:
         sys_private = any(_PRIVATE_IP_RE.match(a) for a in sys_set)
         direct_private = any(_PRIVATE_IP_RE.match(a) for a in direct_union)
         if sys_private and not direct_private:
-            return (f"系统解析器把 {name} 解析到私网/保留地址，而直连 DNS 全为公网地址"
-                    "→ 疑似 DNS 劫持或强制门户")
+            return tr("系统解析器把 {name} 解析到私网/保留地址，而直连 DNS 全为公网地址→ 疑似 DNS 劫持或强制门户",
+                      name=name)
         if sys_set.isdisjoint(direct_union):
-            return f"系统解析器对 {name} 的解析结果与所有直连 DNS 完全不同（常见于 CDN 就近解析，仅提示）"
+            return tr("系统解析器对 {name} 的解析结果与所有直连 DNS 完全不同（常见于 CDN 就近解析，仅提示）",
+                      name=name)
     return None
 
 
@@ -263,7 +264,8 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     wan_ok = metrics["http_ok"] or (ratio is not None and ratio >= float(th.get("quorum_ratio", 0.5)))
     if not wan_ok:
         bad = [t["name"] for t in tick.get("icmp", []) if t.get("actor") and not t.get("ok")]
-        reasons.append(f"外网目标全部失联（{ '、'.join(bad) or '无有效目标' }）")
+        reasons.append(tr("外网目标全部失联（{targets}）",
+                          targets="、".join(bad) or tr("无有效目标")))
         if not metrics["http_ok"]:
             reasons.append("HTTP 应用层探针同样失败")
         return "wan_down", reasons, metrics
@@ -278,9 +280,8 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
         if ext_ok and auto_results and auto_ran and not metrics["dns_auto_ok"]:
             bad_auto = "、".join(d["server"] for d in auto_results
                                 if d.get("ok") is False)
-            reasons.append(f"系统解析器与网卡下发的 DNS（{bad_auto}）同时失败，"
-                           "但直连公共 DNS 成功 → 路由器/DHCP 下发的 DNS 配置问题，"
-                           "可临时改用公共 DNS 验证")
+            reasons.append(tr("系统解析器与网卡下发的 DNS（{servers}）同时失败，但直连公共 DNS 成功 → 路由器/DHCP 下发的 DNS 配置问题，可临时改用公共 DNS 验证",
+                              servers=bad_auto))
         elif ext_ok:
             reasons.append("系统解析器失败，但直连 223.5.5.5 成功 → 本机 DNS 配置问题")
         elif ext_ran or auto_ran:
@@ -311,23 +312,23 @@ def classify(tick: dict, cfg: dict) -> tuple[str, list[str], dict]:
     bad_noise = noise is not None and noise >= int(th.get("noise_bad_dbm", -85))
 
     if bad_rtt:
-        reasons.append(f"{rtt_tag}平均延迟 {rtt:.0f} ms 超过严重阈值")
+        reasons.append(tr("{rtt_tag}平均延迟 {rtt:.0f} ms 超过严重阈值", rtt_tag=rtt_tag, rtt=rtt))
     if bad_loss and loss is not None:
-        reasons.append(f"{loss_host or ''} 丢包率 {loss:.0f}% 偏高".strip())
+        reasons.append(tr("{loss_tag} 丢包率 {loss:.0f}% 偏高", loss_tag=loss_host or "", loss=loss).strip())
     if bad_jitter:
-        reasons.append(f"抖动 {jitter:.0f} ms 偏大")
+        reasons.append(tr("抖动 {jitter:.0f} ms 偏大", jitter=jitter))
     if bad_rssi:
-        reasons.append(f"信号 {rssi} dBm 已低于可用门限")
+        reasons.append(tr("信号 {rssi} dBm 已低于可用门限", rssi=rssi))
     if bad_noise:
-        reasons.append(f"噪底 {noise} dBm 偏高（同频段干扰）")
+        reasons.append(tr("噪底 {noise} dBm 偏高（同频段干扰）", noise=noise))
 
     if bad_rtt or bad_loss or bad_jitter or bad_rssi or bad_noise:
         return "degraded", reasons, metrics
 
     if warn_rtt:
-        reasons.append(f"{rtt_tag}平均延迟 {rtt:.0f} ms 偏高")
+        reasons.append(tr("{rtt_tag}平均延迟 {rtt:.0f} ms 偏高", rtt_tag=rtt_tag, rtt=rtt))
     if warn_rssi:
-        reasons.append(f"信号 {rssi} dBm 偏弱")
+        reasons.append(tr("信号 {rssi} dBm 偏弱", rssi=rssi))
     if warn_rtt or warn_rssi:
         return "weak_signal", reasons, metrics
 

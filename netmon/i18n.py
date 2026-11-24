@@ -9,7 +9,7 @@
 
 用法：
     from . import i18n
-    i18n.t("启动监控")                       # 中→"启动监控" 英→"Start Monitoring"
+    i18n.t("启动监控")                       # 中→"启动监控" 英→"Start"
     i18n.t("采样 {n} 点", n=37)              # 带占位符
     i18n.set_language("en")                   # 运行期切换（GUI 无需重启）
 """
@@ -149,12 +149,13 @@ _EN: dict[str, str] = {
     "采样点": "Samples",
     "硬断网可用率": "Hard-Outage Uptime",
     "异常事件": "Incidents",
-    "启动监控": "Start Monitoring",
-    "停止监控": "Stop Monitoring",
-    "生成报告": "Generate Report",
-    "报告文件夹": "Report Folder",
-    "立即自检": "Run Self-Check",
-    "清除数据": "Clear Data",
+    # 按钮带图标，英文用短词：均分列宽约 145px，长词会溢出被裁切。
+    "启动监控": "Start",
+    "停止监控": "Stop",
+    "生成报告": "Report",
+    "报告文件夹": "Open",
+    "立即自检": "Check",
+    "清除数据": "Clear",
     "最近事件": "Recent Incidents",
     "时间": "Time",
     "类型": "Type",
@@ -315,6 +316,22 @@ _EN: dict[str, str] = {
     "系统解析器与外部 DNS 同时失败": "System resolver and external DNS both failed",
     "系统解析器解析失败（本机缺少 dig，外部 DNS 直连未采集）": "System resolver failed (dig unavailable locally; external DNS not sampled)",
     "劫持": "hijack",
+
+    # ---- 判定原因：动态模板（analyze 生成时即按当前语言渲染）----
+    "系统解析器把 {name} 解析到私网/保留地址，而直连 DNS 全为公网地址→ 疑似 DNS 劫持或强制门户":
+        "System resolver resolved {name} to a private/reserved address, while direct DNS queries returned only public addresses → possible DNS hijack or captive portal",
+    "系统解析器对 {name} 的解析结果与所有直连 DNS 完全不同（常见于 CDN 就近解析，仅提示）":
+        "System resolver's result for {name} differs from all direct DNS results (common with CDN geo-resolution; informational only)",
+    "外网目标全部失联（{targets}）": "All external targets unreachable ({targets})",
+    "系统解析器与网卡下发的 DNS（{servers}）同时失败，但直连公共 DNS 成功 → 路由器/DHCP 下发的 DNS 配置问题，可临时改用公共 DNS 验证":
+        "System resolver and NIC-provided DNS ({servers}) both failed, but direct public DNS succeeded → router/DHCP DNS misconfiguration; you can temporarily switch to public DNS to verify",
+    "{rtt_tag}平均延迟 {rtt:.0f} ms 超过严重阈值": "{rtt_tag}average latency {rtt:.0f} ms exceeds critical threshold",
+    "{loss_tag} 丢包率 {loss:.0f}% 偏高": "{loss_tag} packet loss {loss:.0f}% is high",
+    "抖动 {jitter:.0f} ms 偏大": "Jitter {jitter:.0f} ms is high",
+    "信号 {rssi} dBm 已低于可用门限": "Signal {rssi} dBm is below the usable threshold",
+    "噪底 {noise} dBm 偏高（同频段干扰）": "Noise floor {noise} dBm is high (same-band interference)",
+    "{rtt_tag}平均延迟 {rtt:.0f} ms 偏高": "{rtt_tag}average latency {rtt:.0f} ms is high",
+    "信号 {rssi} dBm 偏弱": "Signal {rssi} dBm is weak",
 
     # ---- 结论 / verdict ----
     "暂无采集数据。": "No data collected yet.",

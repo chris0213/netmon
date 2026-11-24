@@ -106,17 +106,23 @@ def _ellipsize_middle(text: str, limit: int = 46) -> str:
 
 
 # ------------------------------------------------------------------ 线性图标绘制
-# 统一 24×24 坐标系，ox/oy 为在目标 Canvas 上的平移量。
-def icon_shield(c: tk.Canvas, color: str = BLUE, ox: int = 0, oy: int = 0) -> None:
-    """盾牌 + 波纹，应用主标识。"""
-    pts = [(20 + ox, 2 + oy), (33 + ox, 7 + oy), (33 + ox, 20 + oy),
-           (20 + ox, 35 + oy), (7 + ox, 20 + oy), (7 + ox, 7 + oy)]
-    c.create_polygon(pts, outline=color, width=2, fill="")
-    c.create_arc(12 + ox, 11 + oy, 28 + ox, 23 + oy, start=200, extent=140,
-                 style="arc", outline=color, width=1.8)
-    c.create_arc(15 + ox, 14 + oy, 25 + ox, 20 + oy, start=200, extent=140,
-                 style="arc", outline=color, width=1.8)
-    c.create_oval(18.5 + ox, 16.5 + oy, 21.5 + ox, 19.5 + oy, fill=color)
+# 主标识以 40×40 为基准坐标系，ox/oy 为在目标 Canvas 上的平移量。
+def icon_radar(c: tk.Canvas, color: str = BLUE, ox: int = 0, oy: int = 0) -> None:
+    """哨兵雷达：同心圆 + 扫描扇区 + 指针 + 探测到的目标点，应用主标识。"""
+    cx, cy = 20 + ox, 20 + oy
+    r = 16
+    # 扫描扇区（浅蓝填充，描边同色避免 arc 径向杂线）
+    c.create_arc(cx - r, cy - r, cx + r, cy + r, start=303, extent=52,
+                 style="pieslice", fill=BLUE_SOFT, outline=BLUE_SOFT)
+    # 外圈 + 内圈（雷达刻度层次）
+    c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=2)
+    c.create_oval(cx - 9, cy - 9, cx + 9, cy + 9,
+                  outline=BLUE_PALE, width=1.4)
+    # 扫描指针 + 中心点
+    c.create_line(cx, cy, cx + 11, cy - 11, fill=color, width=2, capstyle="round")
+    c.create_oval(cx - 2.6, cy - 2.6, cx + 2.6, cy + 2.6, fill=color)
+    # 探测到的目标点
+    c.create_oval(cx + 6, cy - 15, cx + 12, cy - 9, fill=color)
 
 
 def icon_play(c: tk.Canvas, color: str = GREEN, ox: int = 0, oy: int = 0) -> None:
@@ -277,13 +283,18 @@ class StatusPill(tk.Canvas):
 
     def _draw(self):
         self.delete("all")
-        w, h = 126, 28
+        h = 28
         if self._state == "alert":
             bg, dot, fg, text = RED_SOFT, RED, RED, tr("监控异常")
         elif self._state == "running":
             bg, dot, fg, text = GREEN_SOFT, GREEN, GREEN, tr("监控运行中")
         else:
             bg, dot, fg, text = STOP_BG, MUTED, INK, tr("监控已停止")
+        # 宽度按当前语言的文字度量自适应：英文 "Monitoring Stopped" 比中文长，
+        # 固定 126px 会被裁切。左圆点 12px + 文字 + 右侧留白 16px。
+        text_w = tkfont.Font(font=_f(F_BODY, True)).measure(text)
+        w = int(28 + text_w + 16)
+        self.configure(width=w)
         _round_fill(self, 0, 0, w, h, h / 2, bg)
         self.create_oval(12, 10, 20, 18, fill=dot)
         self.create_text(28, h / 2 + 1, text=text, anchor="w",
@@ -293,6 +304,10 @@ class StatusPill(tk.Canvas):
         if state != self._state:
             self._state = state
             self._draw()
+
+    def redraw(self):
+        """语言切换后强制重绘文字（状态未变也要刷新）。"""
+        self._draw()
 
 
 # ------------------------------------------------------------------ 悬停提示
@@ -779,7 +794,7 @@ class App:
         header = tk.Frame(self.root, bg=CARD, highlightthickness=1, highlightbackground=LINE)
         header.pack(fill="x")
         logo = tk.Canvas(header, width=48, height=46, bg=CARD, highlightthickness=0)
-        icon_shield(logo, BLUE, 4, 4)
+        icon_radar(logo, BLUE, 4, 3)
         logo.pack(side="left", padx=(22, 8), pady=12)
         title_box = tk.Frame(header, bg=CARD)
         title_box.pack(side="left", pady=12)
@@ -787,6 +802,22 @@ class App:
                  bg=CARD).pack(anchor="w")
         tk.Label(title_box, text=tr("网络断连监控与自动归因"), font=_f(F_BODY), fg=MUTED,
                  bg=CARD).pack(anchor="w")
+
+        # 语言切换：顶部 header 右侧的分段控件，带边框、正常字号，一眼可见。
+        lang_box = tk.Frame(header, bg=CARD, highlightthickness=1,
+                            highlightbackground=LINE)
+        lang_box.pack(side="right", padx=(0, 14), pady=13)
+        tk.Label(lang_box, text=tr("语言"), font=_f(F_SMALL), fg=FAINT,
+                 bg=CARD).pack(side="left", padx=(9, 4))
+        self._lang_labels = {}
+        for code, caption in (("zh", tr("中文")), ("en", tr("英文"))):
+            lbl = tk.Label(lang_box, text=caption, font=_f(F_BODY), cursor="hand2",
+                           padx=9, pady=2)
+            lbl.pack(side="left")
+            lbl.bind("<Button-1>", lambda _e, c=code: self.on_switch_language(c))
+            self._lang_labels[code] = lbl
+        self._paint_lang_toggle()
+
         self._status_pill = StatusPill(header)
         self._status_pill.pack(side="right", padx=(0, 22), pady=14)
 
@@ -954,19 +985,6 @@ class App:
                            font=_f(F_SMALL), fg=FAINT, bg=BG)
         cfg_lbl.pack(side="left")
         ToolTip(cfg_lbl, lambda: str(CONFIG_PATH))
-
-        # 语言切换：两个并排的小标签，当前语言高亮（蓝色加粗），点击即切换。
-        lang_box = tk.Frame(foot, bg=BG)
-        lang_box.pack(side="left", padx=(24, 0))
-        tk.Label(lang_box, text=tr("语言"), font=_f(F_SMALL), fg=FAINT,
-                 bg=BG).pack(side="left", padx=(0, 6))
-        self._lang_labels = {}
-        for code, caption in (("zh", tr("中文")), ("en", tr("英文"))):
-            lbl = tk.Label(lang_box, text=caption, font=_f(F_SMALL), cursor="hand2")
-            lbl.pack(side="left", padx=(0, 8))
-            lbl.bind("<Button-1>", lambda _e, c=code: self.on_switch_language(c))
-            self._lang_labels[code] = lbl
-        self._paint_lang_toggle()
 
         # 卸载入口放底栏右侧：低频操作，不占按钮区的视觉重量
         self._uninstall_lbl = tk.Label(foot, text=tr("卸载 NetMon…"), font=_f(F_SMALL),
@@ -1282,6 +1300,7 @@ class App:
                     self._refreshing = False
                     continue
                 if kind == "quit":
+                    self._shutdown_timers()
                     self.root.destroy()
                     return
                 if kind == "reconcile":
@@ -1330,6 +1349,7 @@ class App:
             text, exiting = msg
             messagebox.showinfo(tr("卸载完成"), text)
             if exiting:
+                self._shutdown_timers()
                 self.root.destroy()
 
     def _auto_refresh(self):
@@ -1536,6 +1556,16 @@ class App:
             })
         self._run_async(task, tr("正在采集自检数据…"))
 
+    def _shutdown_timers(self):
+        """取消后台轮询/刷新定时器，避免窗口销毁后回调落到失效控件上。"""
+        for job in (self._poll_job, self._auto_job):
+            if job:
+                try:
+                    self.root.after_cancel(job)
+                except (tk.TclError, ValueError):
+                    pass
+        self._poll_job = self._auto_job = None
+
     def on_close(self):
         if self._running and messagebox.askyesno(
                 tr("退出网哨"),
@@ -1550,6 +1580,7 @@ class App:
 
             threading.Thread(target=stop_then_exit, daemon=False).start()
             return
+        self._shutdown_timers()
         self.root.destroy()
 
 
