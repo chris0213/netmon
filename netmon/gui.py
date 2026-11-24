@@ -384,6 +384,29 @@ class StatCard(tk.Frame):
             self._subnote.pack_forget()
 
 
+def _scroll_canvas_pixels(canvas: tk.Canvas, pixels: float) -> None:
+    """按像素滚动 Canvas，兼容触控板的小 delta 与传统鼠标滚轮。
+
+    Tk 的 yview_scroll 只接受 units/pages 且参数须为整数；触控板 delta 常为
+    ±1~±10，int(delta/120) 会全部截断成 0 导致滚不动。这里改用 yview_moveto，
+    把像素换算成 0~1 的比例，小 delta 也能精确滚动。
+    """
+    region = canvas.cget("scrollregion")
+    if not region:
+        return
+    try:
+        total = float(region.split()[3])
+    except (ValueError, IndexError):
+        return
+    if total <= 0:
+        return
+    top, bottom = canvas.yview()
+    view_h = (bottom - top) * total
+    max_top = max(0.0, total - view_h)
+    new_top = max(0.0, min(max_top, top * total + pixels))
+    canvas.yview_moveto(new_top / total)
+
+
 # ------------------------------------------------------------------ 自检详情弹窗
 def _ok_text(ok, good: str, bad: str, unknown: str = tr("未采集")) -> tuple[str, str]:
     """把三态探针结果转成 (文案, 颜色)：True 绿 / False 红 / None 灰。"""
@@ -465,8 +488,17 @@ class SelfCheckDialog(tk.Toplevel):
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
         inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
-        self.bind("<MouseWheel>", lambda e: canvas.yview_scroll(
-            int(-1 * (e.delta / 120)), "units"))
+        def _on_wheel(e):
+            # macOS 触控板 delta 常为 ±1~±10，鼠标滚轮多为 ±120 的倍数。
+            # int(delta/120) 会把触控板小 delta 截断成 0 → 完全滚不动。
+            if e.delta:
+                _scroll_canvas_pixels(canvas, -e.delta)
+            return "break"
+
+        # 绑在 Toplevel 与 canvas 上，保证鼠标停在任意子控件上都能滚动；
+        # 返回 "break" 防止事件冒泡导致重复滚动。
+        self.bind("<MouseWheel>", _on_wheel)
+        canvas.bind("<MouseWheel>", _on_wheel)
         self.bind("<Button-4>", lambda _e: canvas.yview_scroll(-3, "units"))
         self.bind("<Button-5>", lambda _e: canvas.yview_scroll(3, "units"))
 
@@ -997,7 +1029,11 @@ class App:
                                  lambda _e: self._uninstall_lbl.configure(fg=FAINT))
 
     def _on_wheel(self, event):
-        self._rows_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        # 触控板小 delta（±1~±10）用 int(delta/120) 会被截断为 0 而滚不动；
+        # 改用像素级滚动，兼容触控板与鼠标滚轮。
+        if event.delta:
+            _scroll_canvas_pixels(self._rows_canvas, -event.delta)
+        return "break"
 
     def _update_scrollbar(self):
         """内容高度超出可视区时才显示滚动条，否则隐藏。"""
